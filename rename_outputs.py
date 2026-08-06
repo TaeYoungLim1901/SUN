@@ -12,6 +12,8 @@ TITLES = {
     "RGqZiu59Zzo": "ROKITS_누리호4차_우주에서_오로라_보기",
     "fVnffH5pCRY": "과학토크쇼_태양활동_극대기가_지구에_미치는_영향",
     "2gSJuzmBuBI": "우주알고주알_우주에도_날씨가_있나요",
+    "wXxFJHA2tFE": "YTN_별소리다듣겠네_일식과_코로나",
+    "oEf5HVk_A8g": "YTN_다큐S프라임_강력한_태양폭풍이_온다",
 }
 
 OUT = pathlib.Path("transcript")

@@ -64,4 +64,11 @@ for n, audio in enumerate(pending, 1):
     el = time.time() - t1
     print(f"[done] {stem}: {el/60:.1f}min / {dur/60:.1f}min audio = {el/dur:.2f}x", flush=True)
 
+    # 처리 끝난 오디오는 done/ 으로 옮긴다.
+    # 결과 파일명을 나중에 제목으로 바꾸면 위의 존재 검사가 무력화되어
+    # 이미 끝난 영상을 다시 전사하게 되므로, 오디오 쪽에서 차단한다.
+    done_dir = AUDIO_DIR / "done"
+    done_dir.mkdir(exist_ok=True)
+    audio.rename(done_dir / audio.name)
+
 print(f"\n[queue] 전체 완료. 총 {(time.time()-t0)/60:.1f}분", flush=True)
