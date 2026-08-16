@@ -1,0 +1,245 @@
+"""제3회 천문우주 AI 경진대회(태양풍 속도 예측) 실전 키트.
+
+PLAYBOOK.md Phase 0 이 요구하는 것만 담는다:
+채점기 · 세그먼트 분해 · 블록 CV · 지속성 기저 · 노이즈 실측 · 예측 자산 저장 · 힐클라이밍.
+
+본선 데이터 스키마는 당일에야 확정되므로 모든 함수는 numpy 배열만 받는다.
+y 규격: (n_samples, n_horizon), 열 h = 6*(h+1) 시간 뒤. H=20 이면 5일.
+
+본선 제출은 code.ipynb 단일 파일이라 외부 스크립트를 못 쓴다.
+그래서 이 파일은 **셀 하나에 통째로 붙여넣을 수 있는 크기**로 유지한다. 늘리지 마라.
+
+자체 점검: python tools/kit.py
+"""
+import pathlib
+
+import numpy as np
+
+HORIZON_H = 6            # 관측·예측 간격(시간)
+N_HORIZON = 20           # 6h × 20 = 5일
+CR_DAYS = 27.2753        # 태양 회합 자전 주기(캐링턴)
+PRED_DIR = pathlib.Path("preds")
+LOG = pathlib.Path("experiments/log.md")
+
+
+# ── 1. 채점기 (PLAYBOOK §1.1) ────────────────────────────────────────────────
+def rmse_per_horizon(y, p):
+    """horizon 별 RMSE. 결측(NaN)은 그 셀만 제외한다 — OMNI 계열은 구멍이 흔하다."""
+    y, p = np.asarray(y, float), np.asarray(p, float)
+    out = np.full(y.shape[1], np.nan)
+    for h in range(y.shape[1]):
+        m = np.isfinite(y[:, h]) & np.isfinite(p[:, h])
+        if m.any():
+            out[h] = np.sqrt(np.mean((y[m, h] - p[m, h]) ** 2))
+    return out
+
+
+def score(y, p):
+    """대회 지표: horizon 별 RMSE 를 각각 낸 뒤 평균. 낮을수록 좋다."""
+    return float(np.nanmean(rmse_per_horizon(y, p)))
+
+
+def sensitivity(y, p):
+    """항별 감도. d(score)/d(MSE_h) = 1/(2·H·RMSE_h).
+
+    RMSE 를 먼저 내고 평균하므로 **RMSE 가 작은(=단기) horizon 이 같은 MSE 감소에 더 많이 준다.**
+    반대로 개선 여지의 절대량은 장기 horizon 에 몰린다. 어느 쪽이 실제로 큰지는
+    이 표를 보고 정해라. 감으로 정하지 마라.
+    """
+    r = rmse_per_horizon(y, p)
+    return r, 1.0 / (2 * len(r) * r)
+
+
+# ── 2. 세그먼트 분해기 (PLAYBOOK §2.4) ──────────────────────────────────────
+def breakdown(y, p, groups):
+    """(그룹, 셀수, RMSE, 편향) 목록. 전체 점수 하나만 보는 실험은 시작하지 마라.
+
+    groups 는 행 단위(길이 n) 또는 셀 단위(y 와 같은 shape) 둘 다 받는다.
+    편향 = mean(pred − true). HSS 과소예측을 잡는 열이 이거다.
+    주의: 셀 단위 RMSE 라서 리더보드 식(horizon 평균)과 형태가 다르다. 진단용이다.
+    """
+    y, p = np.asarray(y, float), np.asarray(p, float)
+    g = np.asarray(groups)
+    if g.shape != y.shape:
+        g = np.repeat(g.reshape(-1, 1), y.shape[1], axis=1)
+    ok = np.isfinite(y) & np.isfinite(p)
+    rows = []
+    for k in np.unique(g[ok]):
+        m = ok & (g == k)
+        d = p[m] - y[m]
+        rows.append((k, int(m.sum()), float(np.sqrt(np.mean(d ** 2))), float(np.mean(d))))
+    return rows
+
+
+def speed_band(y, edges=(400, 500, 600)):
+    """실제 속도 구간 라벨. 300~400 평상시 / 600+ 고속 기류(HSS) 를 갈라 본다."""
+    return np.digitize(np.asarray(y, float), edges)
+
+
+# ── 3. 검증 설계 (PLAYBOOK §2.1) ────────────────────────────────────────────
+def carrington_block(times, period_days=CR_DAYS, epoch=None):
+    """캐링턴 자전 주기 블록 id. 무작위 셔플은 27일 지속성 누수를 부른다."""
+    t = np.asarray(times, dtype="datetime64[s]").astype("float64") / 86400.0
+    epoch = t.min() if epoch is None else epoch
+    return np.floor((t - epoch) / period_days).astype(int)
+
+
+def block_folds(blocks, n_folds=5, gap=1):
+    """연속 블록 n등분 + 퍼지. 검증 블록 앞뒤 gap 블록은 학습에서 뺀다.
+
+    입력 창(과거 5일)과 출력 창(미래 5일)이 경계를 넘어 겹치므로 퍼지 없으면 누수다.
+    """
+    ub = np.unique(blocks)
+    for c in np.array_split(ub, n_folds):
+        val = np.isin(blocks, c)
+        near = np.isin(blocks, np.arange(c.min() - gap, c.max() + gap + 1))
+        yield ~near, val
+
+
+# ── 4. 기저 (첫날 리더보드 확보용) ──────────────────────────────────────────
+def persistence_last(v, n_horizon=N_HORIZON):
+    """마지막 관측값을 전 horizon 에 복사. 최하 기저."""
+    return np.repeat(np.asarray(v, float).reshape(-1, 1), n_horizon, axis=1)
+
+
+def persistence_27d(v, idx, lag_steps=109, n_horizon=N_HORIZON):
+    """27일 전 같은 위상의 값. **이걸 못 이기면 영상 피처가 죽어 있는 것이다.**
+
+    v: 6시간 균일 격자 위의 속도 시계열, idx: 각 샘플의 기준 시점 인덱스.
+    lag_steps: 27.2753일 = 109.1 스텝. 실효 지연은 태양풍 속도에 따라 달라지니
+    106~112 를 스윕해서 로컬 최적을 잡아라.  # ponytail: 균일 격자 가정, 결측 많으면 시각 기준 검색으로 교체
+    """
+    v = np.asarray(v, float)
+    idx = np.asarray(idx, int)
+    out = np.full((len(idx), n_horizon), np.nan)
+    for h in range(n_horizon):
+        src = idx + (h + 1) - lag_steps
+        ok = (src >= 0) & (src < len(v))
+        out[ok, h] = v[src[ok]]
+    return out
+
+
+# ── 5. 노이즈 실측 (PLAYBOOK §2.3) ──────────────────────────────────────────
+def pred_dist(a, b, scale=None):
+    """두 예측의 거리. sd(Δ) ≈ k·√dist 적합의 x축."""
+    a, b = np.asarray(a, float), np.asarray(b, float)
+    scale = np.nanstd(a) if scale is None else scale
+    return float(np.nanmean(np.abs(a - b)) / scale)
+
+
+def private_sigma(k, dist, p=0.5):
+    """Public→Private 전이 sd. p = public 비율. 후보 Δ 를 이걸로 나눠 σ 를 낸다."""
+    return k * np.sqrt(dist) * np.sqrt(p) * np.sqrt(1 / p + 1 / (1 - p))
+
+
+# ── 6. 실험 자산 (PLAYBOOK §4.1) ────────────────────────────────────────────
+def save_pred(name, version, oof, test):
+    """진 실험도 반드시 저장한다. 마지막 이득은 재조합에서 나온다."""
+    PRED_DIR.mkdir(parents=True, exist_ok=True)
+    np.save(PRED_DIR / f"oof_{name}_{version}.npy", np.asarray(oof))
+    np.save(PRED_DIR / f"test_{name}_{version}.npy", np.asarray(test))
+
+
+def load_oofs(pattern="oof_*.npy"):
+    return {f.stem[4:]: np.load(f) for f in sorted(PRED_DIR.glob(pattern))}
+
+
+def log_row(exp_id, hypothesis, change, cv, lb, verdict):
+    LOG.parent.mkdir(parents=True, exist_ok=True)
+    if not LOG.exists():
+        LOG.write_text("| ID | 가설 | 변경점 | CV | LB | 판단 |\n|---|---|---|---|---|---|\n", encoding="utf-8")
+    with LOG.open("a", encoding="utf-8") as f:
+        f.write(f"| {exp_id} | {hypothesis} | {change} | {cv} | {lb} | {verdict} |\n")
+
+
+# ── 7. 결합 (PLAYBOOK §5) ───────────────────────────────────────────────────
+def hill_climb(oofs, y, n_iter=60):
+    """중복 선택 허용 그리디. 수동 가중치 튜닝보다 거의 항상 낫다. 결합 1순위."""
+    names = list(oofs)
+    picks, cur, best = [], None, np.inf
+    for _ in range(n_iter):
+        trials = []
+        for n in names:
+            t = oofs[n] if cur is None else (cur * len(picks) + oofs[n]) / (len(picks) + 1)
+            trials.append((score(y, t), n, t))
+        s, n, t = min(trials, key=lambda x: x[0])
+        if s >= best - 1e-9:
+            break
+        best, cur = s, t
+        picks.append(n)
+    return {n: picks.count(n) / len(picks) for n in set(picks)}, best
+
+
+def resid_corr(a, b, y):
+    """잔차 상관 ρ. 높으면(≥0.84) 앙상블 이득이 없다 — 그 자리에서 접어라."""
+    ra, rb = (np.asarray(a, float) - y).ravel(), (np.asarray(b, float) - y).ravel()
+    m = np.isfinite(ra) & np.isfinite(rb)
+    return float(np.corrcoef(ra[m], rb[m])[0, 1])
+
+
+def decompose(other, components):
+    """남의 제출을 내 성분으로 최소자승 분해. 잔차가 0에 가까우면 독립 모델이 아니다.
+
+    반환 (가중치, 상대잔차). 잔차가 작으면 그 혼합비를 이긴 방향으로 외삽하는 축이 열린다.
+    ⚠ 외삽은 이긴 방향으로만.
+    """
+    X = np.column_stack([np.asarray(c, float).ravel() for c in components])
+    b = np.asarray(other, float).ravel()
+    m = np.isfinite(b) & np.isfinite(X).all(1)
+    w, *_ = np.linalg.lstsq(X[m], b[m], rcond=None)
+    return w, float(np.linalg.norm(X[m] @ w - b[m]) / np.linalg.norm(b[m]))
+
+
+# ── 자체 점검 ───────────────────────────────────────────────────────────────
+def demo():
+    rng = np.random.default_rng(0)
+    n, H = 400, N_HORIZON
+    y = 400 + 150 * rng.standard_normal((n, H))
+
+    assert score(y, y) == 0.0, "완벽예측은 0"
+    assert np.isclose(score(y, y + 10), 10.0), "상수 오프셋 10 이면 RMSE 10"
+
+    y2 = y.copy()
+    y2[3, 5] = np.nan
+    assert np.isclose(score(y2, y2 + 10), 10.0), "NaN 셀은 제외되어야 한다"
+
+    r, sens = sensitivity(y, y + 10)
+    assert np.allclose(sens, 1 / (2 * H * r))
+
+    rows = breakdown(y, y + 10, speed_band(y))
+    assert len(rows) == 4 and all(np.isclose(b, 10.0) for _, _, _, b in rows), "편향 열은 +10"
+
+    t = np.arange("2024-01-01", "2024-07-01", np.timedelta64(6, "h"), dtype="datetime64[s]")
+    blk = carrington_block(t)
+    assert blk[0] == 0 and np.all(np.diff(blk) >= 0)
+    folds = list(block_folds(blk, n_folds=4, gap=1))
+    assert len(folds) == 4
+    for tr, va in folds:
+        assert not (tr & va).any(), "학습/검증 겹치면 안 된다"
+        assert set(blk[tr]).isdisjoint(set(blk[va]) | {min(blk[va]) - 1, max(blk[va]) + 1}), "퍼지 실패"
+
+    v = np.arange(500.0)
+    p27 = persistence_27d(v, idx=np.array([200, 300]), lag_steps=109, n_horizon=3)
+    assert p27[0, 0] == 200 + 1 - 109
+    assert np.isnan(persistence_27d(v, idx=np.array([5]), lag_steps=109, n_horizon=1)[0, 0]), "범위 밖은 NaN"
+    assert persistence_last(np.array([1.0, 2.0])).shape == (2, N_HORIZON)
+
+    # 힐클라이밍: 각각은 나쁘고 평균이 좋은 두 예측 → 둘 다 잡아야 한다
+    e = rng.standard_normal((n, H)) * 30
+    a, b = y + e, y - e
+    w, s = hill_climb({"a": a, "b": b}, y)
+    assert set(w) == {"a", "b"} and s < min(score(y, a), score(y, b))
+    assert abs(resid_corr(a, b, y) + 1) < 1e-6, "정반대 잔차 ρ = −1"
+
+    w2, res = decompose(0.8 * a + 0.2 * b, [a, b])
+    assert np.allclose(w2, [0.8, 0.2], atol=1e-6) and res < 1e-9
+
+    k = 1.0
+    assert np.isclose(private_sigma(k, dist=1.0, p=0.5), np.sqrt(2))
+    assert pred_dist(y, y) == 0.0
+
+    print("kit 자체 점검 통과")
+
+
+if __name__ == "__main__":
+    demo()

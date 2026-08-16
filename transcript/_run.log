@@ -1,0 +1,12 @@
+skip (exists): 09_2gSJuzmBuBI.txt
+skip (exists): 05_3--oD514lOU.txt
+skip (exists): 04_RGqZiu59Zzo.txt
+skip (exists): 06_ThQFDIgZmT0.txt
+Traceback (most recent call last):
+  File "D:\hackathon\SUN\tools\transcribe.py", line 67, in <module>
+    tmp.replace(dest)
+    ~~~~~~~~~~~^^^^^^
+  File "C:\Users\livde\AppData\Local\Programs\Python\Python313\Lib\pathlib\_local.py", line 780, in replace
+    os.replace(self, target)
+    ~~~~~~~~~~^^^^^^^^^^^^^^
+PermissionError: [WinError 32] The process cannot access the file because it is being used by another process: 'D:\\hackathon\\SUN\\transcript\\07_fEmf1SFniHE.part' -> 'D:\\hackathon\\SUN\\transcript\\07_fEmf1SFniHE.txt'
