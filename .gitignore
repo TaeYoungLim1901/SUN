@@ -8,3 +8,6 @@ __pycache__/
 
 # 실행 로그
 transcript/_run_*.log
+
+# 팩트체크 산출물 — 재생성 가능
+factcheck/

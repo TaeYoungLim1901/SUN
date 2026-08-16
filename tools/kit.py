@@ -16,8 +16,11 @@ import pathlib
 import numpy as np
 
 HORIZON_H = 6            # 관측·예측 간격(시간)
-N_HORIZON = 20           # 6h × 20 = 5일
+N_HORIZON = 12           # 6h × 12 = 72h (RULES.md §3 확정)
 CR_DAYS = 27.2753        # 태양 회합 자전 주기(캐링턴)
+# 주의: persistence_27d / carrington_block 은 절대 시각을 요구한다. 본선 제공 입력에는
+# 날짜가 없고 test 는 익명이라 **제출 경로에서 쓸 수 없다**(DOMAIN.md §9.1).
+# train/validation 에 시각이 남아 있을 때의 분석용으로만 남겨둔다.
 PRED_DIR = pathlib.Path("preds")
 LOG = pathlib.Path("experiments/log.md")
 
@@ -87,7 +90,7 @@ def carrington_block(times, period_days=CR_DAYS, epoch=None):
 def block_folds(blocks, n_folds=5, gap=1):
     """연속 블록 n등분 + 퍼지. 검증 블록 앞뒤 gap 블록은 학습에서 뺀다.
 
-    입력 창(과거 5일)과 출력 창(미래 5일)이 경계를 넘어 겹치므로 퍼지 없으면 누수다.
+    입력 창(과거 5일)과 출력 창(미래 3일 = 72h)이 경계를 넘어 겹치므로 퍼지 없으면 누수다.
     """
     ub = np.unique(blocks)
     for c in np.array_split(ub, n_folds):
