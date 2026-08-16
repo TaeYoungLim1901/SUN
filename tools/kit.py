@@ -4,7 +4,7 @@ PLAYBOOK.md Phase 0 이 요구하는 것만 담는다:
 채점기 · 세그먼트 분해 · 블록 CV · 지속성 기저 · 노이즈 실측 · 예측 자산 저장 · 힐클라이밍.
 
 본선 데이터 스키마는 당일에야 확정되므로 모든 함수는 numpy 배열만 받는다.
-y 규격: (n_samples, n_horizon), 열 h = 6*(h+1) 시간 뒤. H=20 이면 5일.
+y 규격: (n_samples, n_horizon), 열 h = 6*(h+1) 시간 뒤. 본선은 H=12 (72h).
 
 본선 제출은 code.ipynb 단일 파일이라 외부 스크립트를 못 쓴다.
 그래서 이 파일은 **셀 하나에 통째로 붙여넣을 수 있는 크기**로 유지한다. 늘리지 마라.
@@ -26,31 +26,56 @@ LOG = pathlib.Path("experiments/log.md")
 
 
 # ── 1. 채점기 (PLAYBOOK §1.1) ────────────────────────────────────────────────
-def rmse_per_horizon(y, p):
-    """horizon 별 RMSE. 결측(NaN)은 그 셀만 제외한다 — OMNI 계열은 구멍이 흔하다."""
+def _check(y, p):
+    """채점 전 방어. 여기서 안 막으면 조용히 잘못된 점수가 나온다.
+
+    · shape 불일치 — 예측이 20열인데 정답이 12열이면 뒤 8열이 무시된다(20→12 미수정 모델)
+    · 예측 NaN — 마스크로 빼면 **어려운 셀만 NaN 낸 모델이 유리해진다.** 벌점이어야 한다
+    """
     y, p = np.asarray(y, float), np.asarray(p, float)
+    if y.shape != p.shape:
+        raise ValueError(f"shape 불일치: y{y.shape} vs p{p.shape}")
+    if not np.isfinite(p[np.isfinite(y)]).all():
+        raise ValueError("예측에 NaN/inf 가 있다. 채점 대상 셀은 전부 유한해야 한다")
+    return y, p
+
+
+def rmse_per_horizon(y, p):
+    """horizon 별 RMSE. **진단용이다** — 대회 지표는 `score` 다.
+
+    정답 결측(NaN)은 그 셀만 제외한다.
+    """
+    y, p = _check(y, p)
     out = np.full(y.shape[1], np.nan)
     for h in range(y.shape[1]):
-        m = np.isfinite(y[:, h]) & np.isfinite(p[:, h])
+        m = np.isfinite(y[:, h])
         if m.any():
             out[h] = np.sqrt(np.mean((y[m, h] - p[m, h]) ** 2))
     return out
 
 
 def score(y, p):
-    """대회 지표: horizon 별 RMSE 를 각각 낸 뒤 평균. 낮을수록 좋다."""
-    return float(np.nanmean(rmse_per_horizon(y, p)))
+    """대회 지표: **전체 셀을 한 번에** 평균 후 제곱근. RULES.md §4 식 그대로. 낮을수록 좋다.
+
+    ⚠ horizon 별 RMSE 를 평균한 값이 아니다. 두 값은 다르다 —
+    horizon RMSE 가 [0, 10] 이면 이 식은 sqrt(50)=7.07, 평균식은 5 다.
+    2026-08 이전 판이 평균식이었다. 그때의 실험 점수는 지금 값과 비교하지 마라.
+    """
+    y, p = _check(y, p)
+    m = np.isfinite(y)
+    return float(np.sqrt(np.mean((y[m] - p[m]) ** 2)))
 
 
 def sensitivity(y, p):
-    """항별 감도. d(score)/d(MSE_h) = 1/(2·H·RMSE_h).
+    """항별 감도. 전체 RMSE 기준 d(score)/d(MSE_h) = 1/(2·H·score).
 
-    RMSE 를 먼저 내고 평균하므로 **RMSE 가 작은(=단기) horizon 이 같은 MSE 감소에 더 많이 준다.**
-    반대로 개선 여지의 절대량은 장기 horizon 에 몰린다. 어느 쪽이 실제로 큰지는
-    이 표를 보고 정해라. 감으로 정하지 마라.
+    **모든 horizon 이 같다.** 전체를 한 번에 평균하므로 어느 horizon 의 MSE 를 1 줄이든
+    점수에 주는 효과가 동일하다. ⇒ **개선 여지가 큰 곳(=오차가 큰 장기 horizon·HSS 구간)이
+    그대로 이득이 큰 곳이다.** 표를 뽑아 어디에 여지가 남았는지만 보면 된다.
     """
     r = rmse_per_horizon(y, p)
-    return r, 1.0 / (2 * len(r) * r)
+    s = score(y, p)
+    return r, np.full(len(r), 1.0 / (2 * len(r) * s))
 
 
 # ── 2. 세그먼트 분해기 (PLAYBOOK §2.4) ──────────────────────────────────────
@@ -59,7 +84,7 @@ def breakdown(y, p, groups):
 
     groups 는 행 단위(길이 n) 또는 셀 단위(y 와 같은 shape) 둘 다 받는다.
     편향 = mean(pred − true). HSS 과소예측을 잡는 열이 이거다.
-    주의: 셀 단위 RMSE 라서 리더보드 식(horizon 평균)과 형태가 다르다. 진단용이다.
+    셀 단위 RMSE 라 `score` 와 같은 형태다. 단 그룹별로 잘라 보는 진단용이다.
     """
     y, p = np.asarray(y, float), np.asarray(p, float)
     g = np.asarray(groups)
@@ -106,7 +131,10 @@ def persistence_last(v, n_horizon=N_HORIZON):
 
 
 def persistence_27d(v, idx, lag_steps=109, n_horizon=N_HORIZON):
-    """27일 전 같은 위상의 값. **이걸 못 이기면 영상 피처가 죽어 있는 것이다.**
+    """27일 전 같은 위상의 값. **본선 제출 경로에서는 못 쓴다** (DOMAIN.md §9.1).
+
+    입력 창이 120h 뿐이고 샘플에 날짜가 없다. train/validation 에 시각이 남아 있을 때의
+    분석·비교용으로만 남긴다. 제출 기저는 `persistence_last` 다.
 
     v: 6시간 균일 격자 위의 속도 시계열, idx: 각 샘플의 기준 시점 인덱스.
     lag_steps: 27.2753일 = 109.1 스텝. 실효 지연은 태양풍 속도에 따라 달라지니
@@ -181,10 +209,14 @@ def resid_corr(a, b, y):
 
 
 def decompose(other, components):
-    """남의 제출을 내 성분으로 최소자승 분해. 잔차가 0에 가까우면 독립 모델이 아니다.
+    """예측 하나를 내 성분들로 최소자승 분해. 잔차가 0에 가까우면 독립 모델이 아니다.
 
     반환 (가중치, 상대잔차). 잔차가 작으면 그 혼합비를 이긴 방향으로 외삽하는 축이 열린다.
     ⚠ 외삽은 이긴 방향으로만.
+
+    ⚠⚠ **대상은 우리 `code.ipynb` 안에서 재현되는 우리 모델의 예측뿐이다.**
+    공개 커널·다른 팀 제출을 넣지 마라 — 그 예측은 제공 데이터가 아니고(RULES.md §1 1항),
+    거기서 뽑은 혼합비는 제출 코드로 재생성할 수 없어 재현 검증에 걸린다(§1 3·4항).
     """
     X = np.column_stack([np.asarray(c, float).ravel() for c in components])
     b = np.asarray(other, float).ravel()
@@ -202,12 +234,37 @@ def demo():
     assert score(y, y) == 0.0, "완벽예측은 0"
     assert np.isclose(score(y, y + 10), 10.0), "상수 오프셋 10 이면 RMSE 10"
 
+    # ⚠ 위 두 검사는 「전체 RMSE」와 「horizon RMSE 평균」이 우연히 같은 경우다.
+    #    두 식을 실제로 가르는 반례가 있어야 회귀를 잡는다. horizon 오차가 0 과 10 이면
+    #    규정식(RULES.md §4) = sqrt((0+100)/2) = 7.071, 옛 평균식 = 5.
+    y3 = np.zeros((10, 2))
+    p3 = np.zeros((10, 2))
+    p3[:, 1] = 10.0
+    assert np.isclose(score(y3, p3), np.sqrt(50.0)), "전체 RMSE 여야 한다 (평균식 아님)"
+    assert np.allclose(rmse_per_horizon(y3, p3), [0.0, 10.0])
+
     y2 = y.copy()
     y2[3, 5] = np.nan
-    assert np.isclose(score(y2, y2 + 10), 10.0), "NaN 셀은 제외되어야 한다"
+    assert np.isclose(score(y2, y2 + 10), 10.0), "정답 NaN 셀은 제외되어야 한다"
+
+    # 예측 NaN 은 제외가 아니라 실패다 — 어려운 셀만 NaN 내면 유리해지는 걸 막는다
+    pbad = (y + 10).copy()
+    pbad[0, 0] = np.nan
+    try:
+        score(y, pbad)
+        raise AssertionError("예측 NaN 을 통과시켰다")
+    except ValueError:
+        pass
+
+    # shape 불일치도 실패 — 20→12 미수정 모델이 로컬 PASS 되면 안 된다
+    try:
+        score(y, np.zeros((n, H + 8)))
+        raise AssertionError("shape 불일치를 통과시켰다")
+    except ValueError:
+        pass
 
     r, sens = sensitivity(y, y + 10)
-    assert np.allclose(sens, 1 / (2 * H * r))
+    assert np.allclose(sens, sens[0]), "전체 RMSE 기준이면 horizon 간 감도가 같다"
 
     rows = breakdown(y, y + 10, speed_band(y))
     assert len(rows) == 4 and all(np.isclose(b, 10.0) for _, _, _, b in rows), "편향 열은 +10"

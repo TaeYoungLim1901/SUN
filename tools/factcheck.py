@@ -118,11 +118,12 @@ def sections(text):
 
 
 def _rows(block):
+    """정확히 5열인 행만 받는다. 잘린 행을 패딩해서 받으면 근거 없는 판정이 통과한다."""
     out = []
     for line in block.strip().splitlines():
         cells = [c.strip() for c in line.split("\t")]
-        if len(cells) >= 2 and cells[1] in VERDICTS:
-            out.append((cells + ["-"] * 5)[:5])
+        if len(cells) == 5 and cells[1] in VERDICTS:
+            out.append(cells)
     return out
 
 
@@ -156,7 +157,12 @@ def run_luna(prompt, cwd):
         input=prompt, cwd=cwd, capture_output=True,
         text=True, encoding="utf-8", errors="replace",
     )
-    return p.stdout or ""
+    out = p.stdout or ""
+    # 종료 코드를 버리면 호출 실패가 「판정 0건」으로 둔갑해 조용히 PASS 된다.
+    if p.returncode != 0:
+        out += f"\n\n[factcheck] codex exit={p.returncode}\nstderr:\n{p.stderr or ''}"
+        return out, False
+    return out, True
 
 
 def main(argv=None):
@@ -186,13 +192,20 @@ def main(argv=None):
     OUT.mkdir(exist_ok=True)
     cache = json.loads(CACHE.read_text(encoding="utf-8")) if CACHE.exists() else {}
 
-    rows_all, checked, skipped = [], 0, 0
-    for title, body in sections(target.read_text(encoding="utf-8")):
+    # 캐시 무효화는 **판정에 영향을 주는 모든 것**을 포함해야 한다.
+    # 경로 문자열만 해시하면 같은 경로의 PDF 를 갈아끼워도, 프롬프트·모델을 고쳐도
+    # 옛 판정이 그대로 살아남는다.
+    corpus_digest = hashlib.sha256()
+    for f in pdfs:
+        corpus_digest.update(hashlib.sha256(f.read_bytes()).digest())
+    env = corpus_digest.hexdigest() + PROMPT + "".join(MODEL) + str(target.resolve())
+
+    rows_all, checked, skipped, failed = [], 0, 0, 0
+    for order, (title, body) in enumerate(sections(target.read_text(encoding="utf-8"))):
         if a.only and a.only not in title:
             continue
-        key = f"{target.name}::{title}"
-        # 본문 + 출처 목록이 같으면 판정이 바뀔 이유가 없다.
-        digest = hashlib.sha256((body + corpus).encode("utf-8")).hexdigest()[:16]
+        key = f"{target.name}::{order}::{title}"   # 같은 제목이 둘이면 충돌한다
+        digest = hashlib.sha256((f"{order}\x00{title}\x00{body}\x00{env}").encode("utf-8")).hexdigest()[:16]
         hit = cache.get(key)
         if hit and hit["hash"] == digest and not a.force:
             rows_all += [[title] + r for r in hit["rows"]]
@@ -204,21 +217,25 @@ def main(argv=None):
         if a.reparse:
             if not raw.exists():
                 print(f"  ~ 저장분 없음 — 건너뜀: {title}", flush=True)
+                failed += 1
                 continue
             print(f"[재파싱] {title}", flush=True)
-            out = raw.read_text(encoding="utf-8")
+            out, ok = raw.read_text(encoding="utf-8"), True
         else:
             print(f"[검증] {title}", flush=True)
-            out = run_luna(
+            out, ok = run_luna(
                 PROMPT.format(corpus=corpus, target=target.name, section=title, body=body),
                 cwd=target.resolve().parent,
             )
             raw.parent.mkdir(parents=True, exist_ok=True)
             raw.write_text(out, encoding="utf-8")
 
-        rows = parse_verdicts(out)
+        rows = parse_verdicts(out) if ok else None
+        # 판정 블록이 없거나 호출이 실패한 것은 「깨끗함」이 아니라 **검증 실패**다.
+        # 여기서 캐시하거나 조용히 넘기면 다음 실행에서 PASS 로 굳는다.
         if rows is None:
-            print(f"  ! 판정 블록 없음 — {raw} 확인", flush=True)
+            print(f"  ! 검증 실패 — {raw} 확인", flush=True)
+            failed += 1
             continue
         cache[key] = {"hash": digest, "rows": rows}
         rows_all += [[title] + r for r in rows]
@@ -229,7 +246,7 @@ def main(argv=None):
     n = {v: sum(1 for r in rows_all if r[2] == v) for v in VERDICTS}
     lines = [
         f"# 팩트체크 — {target.name}", "",
-        f"참고 PDF {len(pdfs)}편 · 절 {checked}개 검증 · {skipped}개 캐시 재사용",
+        f"참고 PDF {len(pdfs)}편 · 절 {checked}개 검증 · {skipped}개 캐시 재사용 · **{failed}개 검증 실패**",
         "**" + " · ".join(f"{v} {n[v]}" for v in VERDICTS) + "**", "",
         "| 절 | 주장 | 판정 | 정정 | 근거유형 | 근거 |", "|---|---|---|---|---|---|",
     ]
@@ -239,8 +256,9 @@ def main(argv=None):
     REPORT.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     wrong = n["거짓"] + n["과장"]
-    print(f"\n{REPORT} — 거짓 {n['거짓']} · 과장 {n['과장']} · 미확정 {n['미확정']}")
-    return 1 if wrong else 0
+    print(f"\n{REPORT} — 거짓 {n['거짓']} · 과장 {n['과장']} · 미확정 {n['미확정']} · 검증실패 {failed}")
+    # 검증 실패도 exit 1 이다. 「못 돌았다」가 「깨끗하다」로 보이면 게이트가 무의미하다.
+    return 1 if (wrong or failed) else 0
 
 
 def selftest():
@@ -257,8 +275,8 @@ def selftest():
     two = "```verdicts\nx\t참\t-\t-\t-\n```\n```verdicts\n주장<TAB>판정\ny\t참\t-\t계산\t1AU/400=4.3d\n```"
     assert parse_verdicts(two) == [["y", "참", "-", "계산", "1AU/400=4.3d"]]
     assert parse_verdicts("판정 블록 없음") is None
-    # 열이 모자라면 '-' 로 채운다
-    assert parse_verdicts("```verdicts\nz\t미확정\n```") == [["z", "미확정", "-", "-", "-"]]
+    # 잘린 행은 패딩해서 받지 않는다 — 근거 없는 판정이 통과하면 안 된다
+    assert parse_verdicts("```verdicts\nz\t미확정\n```") == []
     # 태그를 틀리게 찍어도 받는다 (luna 가 실제로 ```text 로 찍었다)
     assert parse_verdicts("```text\nw\t과장\t부분집합\t출처\tCollin p.13\n```") == \
         [["w", "과장", "부분집합", "출처", "Collin p.13"]]
