@@ -39,7 +39,7 @@
 한국 우주환경 ML 연구자(박은수)의 **다중 horizon 시계열 예측 프레임워크**. 우리 과제와 구조가 동형이다.
 
 - **입력 = 태양풍 시계열, 출력 = 다중 스텝 지수** — `configs/io/in6h_out6h.yaml` ~ `in3d_out24h.yaml` **24종**
-  → 우리의 「과거 5일 → 미래 5일」이 이 축에 그대로 들어간다
+  → 우리의 「과거 120시간 → 미래 72시간」이 이 축에 그대로 들어간다
 - `src/pipeline/datasets_hdf5.py` — **SDO + OMNI 다중 모달** 로더 (README 는 "future" 라 표기)
 - `configs/cv/fold1~5.yaml` + `scripts/make_cv_indices.py` + `scripts/aggregate_cv_results.py`
   → **폴드 인덱스를 파일로 굳히는 방식.** PLAYBOOK §2.1 이 요구하는 「CV 를 먼저 못 박는다」의 구현체
@@ -47,7 +47,7 @@
   - `QuantileLoss` — 분위수 손실
   - `GradientBasedWeightLoss` — **급변 구간 강조**. SIR 상승 엣지가 여기 걸린다
   - `MAEOutlierFocusedLoss` — 이상치 집중. HSS 피크
-  - `WeightedMSELoss` — **horizon 별 시간 가중**. 대회 지표가 horizon 균등이니 여기 손댈 축이 열린다
+  - `WeightedMSELoss` — **horizon 별 시간 가중**. 대회 지표는 12 horizon 균등 RMSE 라 여기 손댈 축이 열린다
   - `AdaptiveWeightLoss`, `MultiTaskLoss`, `MultiModalContrastiveLoss`
   - `SolarWindWeightedLoss` (NOAA G-Scale 기반 폭풍 가중)
 - `src/networks/` — linear · lstm · transformer · tcn · patchtst · timesnet · convlstm · gnn · **fusion**
@@ -119,8 +119,8 @@ GoogLeNet + LSTM, AIA 전면 원반. 성능은 이제 낡았지만(cc 0.55) **�
 
 ## 5. 이 조사가 계획을 바꾸는 지점
 
-1. **🔴 사전학습 금지 규정이 1회차에 실재했다** — Surya/LoRA 전략은 **계획 B**. 계획 A 는
-   WindNet/Son 구조를 **처음부터 학습**하는 것 + 격자 CH 면적 피처 + GBDT/선형. 둘 다 준비해라
+1. **현재 규정상 pretrained weight 사용 금지** — Surya/LoRA 전략은 **제외**. 단, 아키텍처 차용 + 랜덤 초기화는 허용. 계획 A 는
+   WindNet/Son 구조를 **처음부터 학습**하는 것 + 격자 CH 면적 피처 + GBDT/선형으로 잡아라
 2. **`eunsu-park/geoindex-model` 의 `losses.py`** 를 첫날 확보해라. HSS 대응 손실이 이미 다 구현돼 있다
 3. **Public–Private 차이 2e-5 (1회차)** — 노이즈가 작을 가능성. 그래도 §2.3 널 조작 제출로 **실측**해라.
    지표가 F1 → RMSE 로 바뀌었으므로 그 값을 그대로 옮기지 마라
