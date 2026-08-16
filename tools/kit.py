@@ -159,8 +159,36 @@ def pred_dist(a, b, scale=None):
 
 
 def private_sigma(k, dist, p=0.5):
-    """Public→Private 전이 sd. p = public 비율. 후보 Δ 를 이걸로 나눠 σ 를 낸다."""
+    """Public→Private 전이 sd. p = public 비율. 후보 Δ 를 이걸로 나눠 σ 를 낸다.
+
+    ⚠ k 는 **paired 실측으로만** 얻는다. `calibrate` 참조. 감으로 넣지 마라.
+    """
     return k * np.sqrt(dist) * np.sqrt(p) * np.sqrt(1 / p + 1 / (1 - p))
+
+
+def calibrate(cv, lb):
+    """제출할 때마다 쌓은 (로컬 CV, 리더보드) 쌍으로 `LB ≈ a·CV + b` 를 적합한다.
+
+    반환 (a, b, resid_sd, n).
+
+    **resid_sd 가 채택선이다.** 로컬에서 이보다 작은 개선은 리더보드에서 구별되지 않는다.
+    널 제출 1장으로 σ 를 재려던 옛 방법을 대체한다 — 그건 시드를 바꿔도 모델이 실제로 달라져
+    채점 노이즈가 아니었고, 제출 1장을 태웠다 (POSTMORTEM M27).
+
+    a 가 1 에서 크게 벗어나면 **로컬이 판정기가 아니라 탐색기**라는 신호다 (PLAYBOOK §2.1):
+    로컬 이득이 리더보드에 그 비율로만 전달된다는 뜻이다.
+    n < 4 면 기울기를 믿지 마라 — 절편만 쓰고 resid_sd 는 보수적으로 크게 잡아라.
+    """
+    x, y = np.asarray(cv, float), np.asarray(lb, float)
+    m = np.isfinite(x) & np.isfinite(y)
+    x, y = x[m], y[m]
+    if len(x) < 2:
+        return np.nan, np.nan, np.nan, len(x)
+    a, b = np.polyfit(x, y, 1)
+    resid = y - (a * x + b)
+    # 자유도 2 를 뺀다. 점 2개면 잔차가 0 이라 σ 를 0 으로 착각하면 안 된다.
+    sd = float(np.sqrt(np.sum(resid ** 2) / (len(x) - 2))) if len(x) > 2 else np.nan
+    return float(a), float(b), sd, len(x)
 
 
 # ── 6. 실험 자산 (PLAYBOOK §4.1) ────────────────────────────────────────────
@@ -265,6 +293,13 @@ def demo():
 
     r, sens = sensitivity(y, y + 10)
     assert np.allclose(sens, sens[0]), "전체 RMSE 기준이면 horizon 간 감도가 같다"
+
+    # 채택선 산출 — 완전한 선형이면 잔차 0, 흔들리면 σ 가 커진다
+    slope, icpt, sd, npts = calibrate([1.0, 2.0, 3.0, 4.0], [2.0, 4.0, 6.0, 8.0])
+    assert np.isclose(slope, 2.0) and abs(icpt) < 1e-9 and sd < 1e-9 and npts == 4
+    _, _, sd2, _ = calibrate([1.0, 2.0, 3.0, 4.0], [2.0, 4.1, 5.9, 8.0])
+    assert sd2 > sd, "잡음이 있으면 잔차 σ 가 커야 한다"
+    assert np.isnan(calibrate([1.0, 2.0], [1.0, 2.0])[2]), "점 2개로 σ 를 0 이라 하면 안 된다"
 
     rows = breakdown(y, y + 10, speed_band(y))
     assert len(rows) == 4 and all(np.isclose(b, 10.0) for _, _, _, b in rows), "편향 열은 +10"
