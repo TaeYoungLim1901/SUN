@@ -25,7 +25,8 @@ import sys
 
 MODEL = ["-m", "gpt-5.6-luna", "-c", 'model_reasoning_effort="xhigh"']
 PERSONAL, TEAM = "origin", "team"       # origin = 내 private 레포
-MAIN, SHARED = "main", "team"           # 브랜치 이름
+# 브랜치 이름. 원격도 `team` 이라 브랜치까지 team 이면 git 이 refname 을 못 가린다.
+MAIN, SHARED = "main", "shared"
 DIFF_CAP = 12000
 
 PROMPT = """아래는 어느 깃 저장소의 **스테이징된 변경**이다. 커밋 메시지를 써라.

@@ -26,7 +26,7 @@
 | | 브랜치 | 원격 | 내용 |
 |---|---|---|---|
 | 개인 | `main` | `origin` = `TaeYoungLim1901/SUN` (private) | 내 작업분 전부 |
-| 팀 | `team` | `team` = `andy6609/sungnam-to-kaist` | 주고받는 것만 |
+| 팀 | `shared` | `team` = `andy6609/sungnam-to-kaist` | 주고받는 것만 |
 
 ```
 python tools/push.py                        # main 커밋 → 개인 레포
@@ -34,7 +34,7 @@ python tools/push.py --share DOMAIN.md ...  # 그 파일만 팀에 공개
 python tools/push.py --sync                 # 팀원 작업 받아 main 에 합치기
 ```
 
-**`team` 브랜치에서 `git add -A` 금지.** 개인 파일이 팀 레포로 샌다. 공개는 `--share` 로만.
+**`shared` 브랜치에서 `git add -A` 금지.** 개인 파일이 팀 레포로 샌다. 공개는 `--share` 로만.
 팀에 안 가는 것: 이 문단 아래 전부, `ARENA.md`, `GROK_REVIEW.md`,
 `tools/push.py`, `tools/{data_probe,omni_fill,make_submission}.py`.
 
