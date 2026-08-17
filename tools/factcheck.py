@@ -233,7 +233,8 @@ def main(argv=None):
         rows = parse_verdicts(out) if ok else None
         # 판정 블록이 없거나 호출이 실패한 것은 「깨끗함」이 아니라 **검증 실패**다.
         # 여기서 캐시하거나 조용히 넘기면 다음 실행에서 PASS 로 굳는다.
-        if rows is None:
+        # `[]` (블록은 있으나 성립한 판정행 0개) 도 실패다 — 캐시하면 다음 실행에서 PASS 로 굳는다.
+        if not rows:
             print(f"  ! 검증 실패 — {raw} 확인", flush=True)
             failed += 1
             continue
@@ -277,6 +278,7 @@ def selftest():
     assert parse_verdicts("판정 블록 없음") is None
     # 잘린 행은 패딩해서 받지 않는다 — 근거 없는 판정이 통과하면 안 된다
     assert parse_verdicts("```verdicts\nz\t미확정\n```") == []
+    # 그 `[]` 는 main 에서 `if not rows` 로 failed 처리된다 (성공 아님, 캐시 안 함)
     # 태그를 틀리게 찍어도 받는다 (luna 가 실제로 ```text 로 찍었다)
     assert parse_verdicts("```text\nw\t과장\t부분집합\t출처\tCollin p.13\n```") == \
         [["w", "과장", "부분집합", "출처", "Collin p.13"]]

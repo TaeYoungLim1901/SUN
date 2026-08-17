@@ -123,8 +123,8 @@ GoogLeNet + LSTM, AIA 전면 원반. 성능은 이제 낡았지만(cc 0.55) **�
 1. **현재 규정상 pretrained weight 사용 금지** — Surya/LoRA 전략은 **제외**. 단, 아키텍처 차용 + 랜덤 초기화는 허용. 계획 A 는
    WindNet/Son 구조를 **처음부터 학습**하는 것 + 격자 CH 면적 피처 + GBDT/선형으로 잡아라
 2. **`eunsu-park/geoindex-model` 의 `losses.py`** 를 첫날 확보해라. HSS 대응 손실이 이미 다 구현돼 있다
-3. **Public–Private 차이 2e-5 (1회차)** — 노이즈가 작을 가능성. 그래도 §2.3 널 조작 제출로 **실측**해라.
+3. **Public–Private 차이 2e-5 (1회차)** — 노이즈가 작을 가능성. 그래도 `kit.calibrate` 로 **실측**해라.
    지표가 F1 → RMSE 로 바뀌었으므로 그 값을 그대로 옮기지 마라
 4. **공개 커널 벤치마크가 없다** — 성분 분해 대상은 팀원 제출뿐. 리더보드 격차 해석에 더 신중해야 한다
-5. **CH 분할은 CHIMERApy / pyCHIPS 로 즉시 조달** 가능. 자체 구현에 시간 태우지 마라
-6. **HUXt** 로 물리 기저 1장을 싸게 확보 → 앙상블 잔차 다양성 (DL 계열과 오차 구조가 다르다)
+5. **CHIMERApy / pyCHIPS 는 제출 불가** — 171Å 미제공. CH 분할은 **193/211 PNG 임계·k-means** 만 쓴다
+6. **HUXt 기저는 제출 불가** — 외부 WSA/FITS 입력이 필요하다 (DOMAIN §9.1)

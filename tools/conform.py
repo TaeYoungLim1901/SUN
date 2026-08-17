@@ -24,7 +24,8 @@ import sys
 
 SKIP_DIRS = {".git", "factcheck", "__pycache__", "preds", "transcript", "audio"}
 # conform.py 는 틀린 문자열을 정규식으로 들고 있으니 자기 자신은 볼 수 없다.
-SKIP_FILES = {"POSTMORTEM.md", "notesC.md", "notesD.md", "REVIEW.md", "conform.py"}
+SKIP_FILES = {"POSTMORTEM.md", "notesC.md", "notesD.md", "REVIEW.md", "conform.py",
+              "GROK_REVIEW.md"}   # 검토서 — 틀린 원문과 규칙 정규식을 인용한다
 
 # 면제는 **줄 전체가 아니라 구간 단위**로 한다.
 # 줄 어디엔가 「불가」가 있다고 줄 전체를 건너뛰면, 같은 줄 다른 절의 진짜 위반이 숨는다.
@@ -80,6 +81,13 @@ RULES = [
     ("M21", "적도 자전율을 적도라 안 밝히고 씀",
      r"14\.713(?![^\n]*적도)",
      "14.713 은 적도율(Snodgrass & Ulrich). 캐링턴 항성은 14.184°/일"),
+    # 20 프레임이면 간격 19개 → 114h → 63.3°. 「21 프레임/21장일 때의 값」이라 밝힌 설명은 면제.
+    ("M29", "창 자전각 66.7",
+     r"66\.7\s*°(?![^\n]{0,60}21\s*(?:프레임|장))",
+     "63.3° (114h, 19간격)"),
+    ("M07b", "Son=대회 동일",
+     r"사실상 같은 설정",
+     "영상 cadence 다름"),
     ("M04", "Surya/LoRA 를 계획 B 로 유지",
      r"Surya[^\n]{0,40}계획\s*B|계획\s*B[^\n]{0,20}Surya",
      "pretrained weight 사용이라 제외. 아키텍처 차용만 허용 (RULES.md §1 5항)"),
@@ -153,7 +161,7 @@ def selftest():
     assert got == [("bad.md", 1), ("bad.md", 2), ("bad.md", 3),
                    ("sneaky.md", 1), ("sneaky.md", 2), ("sneaky.md", 3)], got
     for mid, _, pat, right in RULES:
-        assert re.fullmatch(r"M\d{2}", mid), f"POSTMORTEM ID 형식 아님: {mid}"
+        assert re.fullmatch(r"M\d{2}[a-z]?", mid), f"POSTMORTEM ID 형식 아님: {mid}"
         assert right.strip(), f"{mid}: 정답을 안 적었다"
         re.compile(pat)                        # 정규식이 전부 컴파일되는지
     print("selftest ok")
