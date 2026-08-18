@@ -60,35 +60,40 @@ def rmse(a, b):
     return float(np.sqrt(np.mean((np.asarray(a) - np.asarray(b)) ** 2)))
 
 
-tr_x = pd.read_csv(ROOT / "train/inputs.csv")
-va_x = pd.read_csv(ROOT / "validation/inputs.csv")
-te_x = pd.read_csv(ROOT / "test/inputs.csv")
-tr_y = pd.read_csv(ROOT / "train/targets.csv")[T].to_numpy(np.float64)
-va_y = pd.read_csv(ROOT / "validation/targets.csv")[T].to_numpy(np.float64)
+def main():
+    tr_x = pd.read_csv(ROOT / "train/inputs.csv")
+    va_x = pd.read_csv(ROOT / "validation/inputs.csv")
+    te_x = pd.read_csv(ROOT / "test/inputs.csv")
+    tr_y = pd.read_csv(ROOT / "train/targets.csv")[T].to_numpy(np.float64)
+    va_y = pd.read_csv(ROOT / "validation/targets.csv")[T].to_numpy(np.float64)
 
-Xtr = sample_feats("train", tr_x)
-Xva = sample_feats("validation", va_x)
-Xte = sample_feats("test", te_x)
-print("feature dim", Xtr.shape, flush=True)
+    Xtr = sample_feats("train", tr_x)
+    Xva = sample_feats("validation", va_x)
+    Xte = sample_feats("test", te_x)
+    print("feature dim", Xtr.shape, flush=True)
 
-ridge = RidgeCV(alphas=np.logspace(-3, 4, 30)).fit(Xtr, tr_y)
-rv, rt = ridge.predict(Xva), ridge.predict(Xte)
-gv, gt = np.zeros_like(va_y), np.zeros((len(te_x), 12))
-for h in range(12):
-    m = HistGradientBoostingRegressor(
-        max_iter=500, learning_rate=0.06, max_leaf_nodes=31,
-        early_stopping=True, validation_fraction=0.12, random_state=777,
-    ).fit(Xtr, tr_y[:, h])
-    gv[:, h], gt[:, h] = m.predict(Xva), m.predict(Xte)
-    print(f"  h{h:02d} val_rmse={rmse(va_y[:, h], gv[:, h]):.2f}", flush=True)
+    ridge = RidgeCV(alphas=np.logspace(-3, 4, 30)).fit(Xtr, tr_y)
+    rv, rt = ridge.predict(Xva), ridge.predict(Xte)
+    gv, gt = np.zeros_like(va_y), np.zeros((len(te_x), 12))
+    for h in range(12):
+        m = HistGradientBoostingRegressor(
+            max_iter=500, learning_rate=0.06, max_leaf_nodes=31,
+            early_stopping=True, validation_fraction=0.12, random_state=777,
+        ).fit(Xtr, tr_y[:, h])
+        gv[:, h], gt[:, h] = m.predict(Xva), m.predict(Xte)
+        print(f"  h{h:02d} val_rmse={rmse(va_y[:, h], gv[:, h]):.2f}", flush=True)
 
-report = {}
-for name, (pv, pt) in {"img_ridge": (rv, rt), "img_gbdt": (gv, gt),
-                       "img_blend": ((rv + gv) / 2, (rt + gt) / 2)}.items():
-    np.save(OUT / f"val_{name}.npy", pv)
-    np.save(OUT / f"test_{name}.npy", pt)
-    report[name] = {"val_rmse": round(rmse(va_y, pv), 3),
-                    "per_h": [round(rmse(va_y[:, h], pv[:, h]), 1) for h in range(12)]}
-(OUT / "imgfeat.json").write_text(json.dumps(report, indent=2))
-for name, r in sorted(report.items(), key=lambda kv: kv[1]["val_rmse"]):
-    print(f"{name:12s} val_rmse={r['val_rmse']:7.3f}  per_h={r['per_h']}", flush=True)
+    report = {}
+    for name, (pv, pt) in {"img_ridge": (rv, rt), "img_gbdt": (gv, gt),
+                           "img_blend": ((rv + gv) / 2, (rt + gt) / 2)}.items():
+        np.save(OUT / f"val_{name}.npy", pv)
+        np.save(OUT / f"test_{name}.npy", pt)
+        report[name] = {"val_rmse": round(rmse(va_y, pv), 3),
+                        "per_h": [round(rmse(va_y[:, h], pv[:, h]), 1) for h in range(12)]}
+    (OUT / "imgfeat.json").write_text(json.dumps(report, indent=2))
+    for name, r in sorted(report.items(), key=lambda kv: kv[1]["val_rmse"]):
+        print(f"{name:12s} val_rmse={r['val_rmse']:7.3f}  per_h={r['per_h']}", flush=True)
+
+
+if __name__ == "__main__":
+    main()

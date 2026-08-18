@@ -252,6 +252,10 @@ def cmd_auth():
     blob = clipboard()
     if "curl" not in blob.lower() and "=" not in blob:
         sys.exit(HOWTO)
+    if "oauth2_proxy" not in blob:
+        # SSO 리다이렉트 전 요청을 복사하면 여기 걸린다. 그대로 저장하면 401 만 본다.
+        sys.exit("이 cURL 에 oauth2_proxy 쿠키가 없다 — 로그인 전 요청을 복사한 것이다. "
+                 "Network 탭 Fetch/XHR 필터에서 api/... 요청을 복사해라 (CONNECT.md 3).")
     COOKIE_FILE.write_text(parse_cookie(blob), encoding="utf-8")
     print("쿠키 저장 →", COOKIE_FILE)
     Remote().check()

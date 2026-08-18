@@ -28,6 +28,7 @@ PX = int(sys.argv[1]) if len(sys.argv) > 1 else 96
 TAG = sys.argv[2] if len(sys.argv) > 2 else "cnn96"
 SEED = int(sys.argv[3]) if len(sys.argv) > 3 else 777
 EPOCHS = int(sys.argv[4]) if len(sys.argv) > 4 else 40
+HSS_W = float(sys.argv[5]) if len(sys.argv) > 5 else 1.0  # y>600 셀 가중. 1 이면 기존과 동일
 IMG = [f"image_{i:02d}" for i in range(20)]
 W = [f"wind_{i:02d}" for i in range(20)]
 T = [f"target_{i:02d}" for i in range(12)]
@@ -135,7 +136,7 @@ last = {s: torch.from_numpy(x[W[-1]].to_numpy(np.float32)).to(DEV)
 ytr = torch.from_numpy(tr_y).to(DEV)
 
 model = Net().to(DEV).to(memory_format=torch.channels_last)
-print("params", sum(p.numel() for p in model.parameters()), flush=True)
+print("params", sum(p.numel() for p in model.parameters()), "hss_w", HSS_W, flush=True)
 opt = torch.optim.AdamW(model.parameters(), lr=2e-3, weight_decay=0.05)
 BS = 48
 steps = math.ceil(len(tr_x) / BS)
@@ -180,7 +181,10 @@ for ep in range(1, EPOCHS + 1):
         opt.zero_grad(set_to_none=True)
         with torch.amp.autocast("cuda", dtype=torch.bfloat16):
             pred = model(*batch("train", rows, train=True)) + last["train"][rows, None]
-            loss = torch.nn.functional.mse_loss(pred, ytr[rows])
+            err = (pred - ytr[rows]) ** 2
+            if HSS_W != 1.0:
+                err = err * torch.where(ytr[rows] > 600.0, HSS_W, 1.0)
+            loss = err.mean()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
@@ -207,6 +211,6 @@ np.save(OUT / f"val_{TAG}.npy", vp)
 np.save(OUT / f"test_{TAG}.npy", tp)
 torch.save(best_state, WORK / f"{TAG}.pth")
 (OUT / f"{TAG}.json").write_text(json.dumps(
-    {"val_rmse": round(rmse(va_y, vp), 3),
+    {"val_rmse": round(rmse(va_y, vp), 3), "hss_w": HSS_W, "seed": SEED,
      "per_h": [round(rmse(va_y[:, h], vp[:, h]), 1) for h in range(12)]}, indent=2))
 print(f"{TAG} best val_rmse={best:.3f}", flush=True)

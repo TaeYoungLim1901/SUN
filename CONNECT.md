@@ -14,8 +14,11 @@
 
 1. **크롬**에서 위 lab 주소를 열고 SSO 로그인. JupyterLab 이 보이면 성공.
 2. `F12` → **Network** 탭 → `Ctrl+R` 로 새로고침.
-3. 목록 맨 위 요청(이름이 `lab` 인 것)에서 **우클릭 → Copy → Copy as cURL (bash)**.
-4. 채팅에 "복사했어" 라고만 쳐라.
+3. Network 탭에서 **Fetch/XHR** 필터를 켜고 `api/...` 요청 아무거나(예: `api/contents`, `api/kernels`)
+   **우클릭 → Copy → Copy as cURL (bash)**.
+   ⚠ 맨 위 `lab` 문서 요청을 복사하지 마라. 그건 SSO 리다이렉트 **전** 요청일 때가 많고,
+   그러면 `oauth2_proxy_kubeflow_*` 쿠키가 안 들어가 `HTTP 401 api/status` 로 죽는다.
+4. 붙여넣은 cURL 에 **`oauth2_proxy`** 라는 글자가 있는지 눈으로 한 번 확인해라. 없으면 그 복사는 틀렸다.
 
 그 뒤 에이전트가 클립보드를 읽어 쿠키를 뽑고 `~/.sun_cookie` 에 저장한다:
 

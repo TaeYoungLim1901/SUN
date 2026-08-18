@@ -31,8 +31,10 @@ IMG = [f"image_{i:02d}" for i in range(20)]
 W = [f"wind_{i:02d}" for i in range(20)]
 T = [f"target_{i:02d}" for i in range(12)]
 AU_KM = 1.495978707e8
-SEED = int(sys.argv[1]) if len(sys.argv) > 1 else 777
-TAG = sys.argv[2] if len(sys.argv) > 2 else "eswf"
+SEED = 777
+TAG = "eswf"
+HSS_W = 1.0
+SEQ = None
 # 속도 가설. 전파시간 τ=1AU/v 가 2.5일(700) ~ 5.8일(300) 을 덮는다 (DOMAIN §1.3 표).
 V_HYP = (300.0, 350.0, 400.0, 450.0, 500.0, 600.0, 700.0)
 # CH 임계는 이미지별 디스크 중앙값 대비 상대값. 「35% 를 그대로」는 닫힌 축이라 여러 개를 준다.
@@ -157,32 +159,43 @@ def rmse(a, b):
     return float(np.sqrt(np.mean((np.asarray(a, np.float64) - np.asarray(b, np.float64)) ** 2)))
 
 
-tr_x = pd.read_csv(ROOT / "train/inputs.csv")
-va_x = pd.read_csv(ROOT / "validation/inputs.csv")
-te_x = pd.read_csv(ROOT / "test/inputs.csv")
-tr_y = pd.read_csv(ROOT / "train/targets.csv")[T].to_numpy(np.float64)
-va_y = pd.read_csv(ROOT / "validation/targets.csv")[T].to_numpy(np.float64)
+def main():
+    global SEQ
+    tr_x = pd.read_csv(ROOT / "train/inputs.csv")
+    va_x = pd.read_csv(ROOT / "validation/inputs.csv")
+    te_x = pd.read_csv(ROOT / "test/inputs.csv")
+    tr_y = pd.read_csv(ROOT / "train/targets.csv")[T].to_numpy(np.float64)
+    va_y = pd.read_csv(ROOT / "validation/targets.csv")[T].to_numpy(np.float64)
 
-SEQ = {s: sequences(s, x) for s, x in
-       (("train", tr_x), ("validation", va_x), ("test", te_x))}
-print("per-image dim", SEQ["train"].shape, flush=True)
+    SEQ = {s: sequences(s, x) for s, x in
+           (("train", tr_x), ("validation", va_x), ("test", te_x))}
+    print("per-image dim", SEQ["train"].shape, "hss_w", HSS_W, flush=True)
 
-gv, gt = np.zeros_like(va_y), np.zeros((len(te_x), 12))
-for h in range(12):
-    hh = 6.0 * (h + 1)
-    Xtr, Xva, Xte = (build("train", tr_x, hh), build("validation", va_x, hh),
-                     build("test", te_x, hh))
-    m = HistGradientBoostingRegressor(
-        max_iter=700, learning_rate=0.05, max_leaf_nodes=31, l2_regularization=1.0,
-        early_stopping=True, validation_fraction=0.12, n_iter_no_change=30, random_state=SEED,
-    ).fit(Xtr, tr_y[:, h])
-    gv[:, h], gt[:, h] = m.predict(Xva), m.predict(Xte)
-    print(f"  h{h:02d} ({hh:3.0f}h) dim={Xtr.shape[1]} val_rmse={rmse(va_y[:, h], gv[:, h]):.2f}",
-          flush=True)
+    gv, gt = np.zeros_like(va_y), np.zeros((len(te_x), 12))
+    for h in range(12):
+        hh = 6.0 * (h + 1)
+        Xtr, Xva, Xte = (build("train", tr_x, hh), build("validation", va_x, hh),
+                         build("test", te_x, hh))
+        sw = None if HSS_W == 1.0 else np.where(tr_y[:, h] > 600.0, HSS_W, 1.0)
+        m = HistGradientBoostingRegressor(
+            max_iter=700, learning_rate=0.05, max_leaf_nodes=31, l2_regularization=1.0,
+            early_stopping=True, validation_fraction=0.12, n_iter_no_change=30, random_state=SEED,
+        )
+        m.fit(Xtr, tr_y[:, h], sample_weight=sw)
+        gv[:, h], gt[:, h] = m.predict(Xva), m.predict(Xte)
+        print(f"  h{h:02d} ({hh:3.0f}h) dim={Xtr.shape[1]} val_rmse={rmse(va_y[:, h], gv[:, h]):.2f}",
+              flush=True)
 
-np.save(OUT / f"val_{TAG}.npy", gv)
-np.save(OUT / f"test_{TAG}.npy", gt)
-(OUT / f"{TAG}.json").write_text(json.dumps(
-    {"val_rmse": round(rmse(va_y, gv), 3),
-     "per_h": [round(rmse(va_y[:, h], gv[:, h]), 1) for h in range(12)]}, indent=2))
-print(f"{TAG} val_rmse={rmse(va_y, gv):.3f}", flush=True)
+    np.save(OUT / f"val_{TAG}.npy", gv)
+    np.save(OUT / f"test_{TAG}.npy", gt)
+    (OUT / f"{TAG}.json").write_text(json.dumps(
+        {"val_rmse": round(rmse(va_y, gv), 3), "hss_w": HSS_W,
+         "per_h": [round(rmse(va_y[:, h], gv[:, h]), 1) for h in range(12)]}, indent=2))
+    print(f"{TAG} val_rmse={rmse(va_y, gv):.3f}", flush=True)
+
+
+if __name__ == "__main__":
+    SEED = int(sys.argv[1]) if len(sys.argv) > 1 else 777
+    TAG = sys.argv[2] if len(sys.argv) > 2 else "eswf"
+    HSS_W = float(sys.argv[3]) if len(sys.argv) > 3 else 1.0
+    main()

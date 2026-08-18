@@ -2,6 +2,8 @@
 
 출처 두 개. 뒤엣것이 우선한다.
 - **[공지]** 본선 시작과 함께 게시된 「본선 문제 및 운영 안내」 (2026-08-18, 원문 `ADDRULES.md`)
+- **[공지2]** 「Dataset 폴더 쓰기 권한 및 Cache 저장 경로 안내」 (2026-08-18 14:42, 원문 `ADDRULES.md`)
+- **[공지3]** 「대회 데이터셋 사용 및 외부 반출 관련 안내」 (2026-08-18 16:19, 원문 `ADDRULES.md`)
 - **[PDF]** 본선 설명회 자료(`df.pdf`, 17p)
 
 미션: 태양풍 속도 예측.
@@ -163,6 +165,7 @@ $$RMSE = \sqrt{\frac{1}{N} \sum_{i=1}^N (y_i - \hat{y}_i)^2}$$
 |---|---|
 | **test 입력을 이용한 통계 산출**(정규화 mean/std를 train+test 전체로 계산) | p.10의 "통계는 train split에서만 계산"은 **[가이드]** 슬라이드에 있고 p.7 부정행위 목록에는 없음. 금지된 것은 **target** 사용뿐. → 문구상 허용이나 조직위가 가이드를 규정으로 해석할 여지 있음. **실무 권고: train 기준으로 계산하라.** 얻는 이득이 미미한 반면 분쟁 리스크만 남는다 |
 | **test 입력에 대한 self-supervised / transductive 학습** (target 없이 이미지만) | target 정보를 일절 쓰지 않으므로 6항 직접 위반은 아니다. 다만 [공지] 최종 확인 항목이 "**Test 데이터와 관련한** Data Leakage가 발생하지 않도록 할 것"으로 범위를 넓혔고, [공지] 는 "Train/Validation/Test 데이터의 **용도를 구분**하여 사용할 것"도 요구한다 → **회색이 짙어졌다.** 최종 제출 경로에는 넣지 마라 |
+| **제공 데이터를 로컬로 내려받아 쓰는 것** | [공지3] 은 금지가 아니라 **「가급적 지양」·「불리하게 작용할 수 있음」** 이다. 그러나 근거는 재현성 검증이다. **학습·추론은 전부 서버에서 한다.** 로컬엔 우리 산출물(`preds/*.npy`, `pred_bundle.npz`)만 두고, 원본 `inputs/targets.csv` 사본은 두지 않는다 (2026-08-18 `work/local_data/{train,validation}` 삭제, `.gitignore` 등록). 결합 가중치는 서버가 만든 예측에서 나오고 `pipeline.py` 에 상수로 박히므로 서버 재실행으로 그대로 재현된다 |
 | **제공 데이터만으로 자체 사전학습 후 fine-tune** | 외부 weight가 아니므로 5항의 "Pretrained Model의 가중치"는 아니라는 해석이 자연스러우나, 문구가 출처를 특정하지 않음 → §7에서 확인 권장 |
 
 ### 5-3. 하지 말 것 (문구가 애매해도 실질 위반)
@@ -205,6 +208,11 @@ $$RMSE = \sqrt{\frac{1}{N} \sum_{i=1}^N (y_i - \hat{y}_i)^2}$$
 > ⚠ **샘플코드는 그대로는 안 돈다.** `prepare_image_memmap()` 이 캐시를 `DATA_ROOT/resized_cache/` 에
 > 쓰는데 그 경로가 읽기 전용이라 `OSError: [Errno 30] Read-only file system` 으로 죽는다.
 > `cache_root` 를 `/home/jovyan/work/` 아래로 바꿔야 한다. **한 줄 고치면 끝난다.**
+>
+> **[공지2] 가 이걸 공식 확인했다.** 조직위 권고 수정본은 `cache_root = Path("resized_cache") / f"{IMAGE_SIZE}px"`
+> (기본 작업 경로 기준 `/home/jovyan/resized_cache`). 우리는 이미 `/home/jovyan/work/resized_cache/{64,96}px`
+> 를 쓰고 `pipeline.py:resolve_cache()` 가 없으면 `~/sw_cache/` 로 떨어진다 — 둘 다 `/home/jovyan` 하위라 **조치 불필요**.
+> 원본 데이터는 읽기만, 캐시·출력·체크포인트는 전부 `/home/jovyan` 하위.
 
 > 유니크 이미지가 샘플 수보다 훨씬 적다(train 10,139 < 9,607×20). 샘플코드도 이미 유니크 파일당
 > 한 번만 resize 한다. **영상 임베딩도 유니크 이미지 단위로 한 번만 뽑아 캐시**하면 같은 배수로 아낀다.
@@ -300,6 +308,8 @@ $$RMSE = \sqrt{\frac{1}{N} \sum_{i=1}^N (y_i - \hat{y}_i)^2}$$
 | 9 | test target 문구 | "Target 정보를 학습에 사용" | "**추정·획득**하여 학습 과정에 활용하거나 **이에 준하는** Data Leakage" | §1 6항 |
 | 10 | **pseudo-labeling** | 회색 (해당 안 된다는 해석이 자연스러움) | **NO-GO** — 9번의 「추정」에 정면으로 걸림 | §5-3 |
 | 11 | test 입력 transductive / 정규화 통계 | 회색 (문구상 허용) | **회색 유지, 리스크 상승** — "Test 데이터와 **관련한**" 으로 범위 확장 + "용도 구분" 요구 | §5-2 |
+| 12 | 캐시 경로 | 우리 실측으로만 「읽기 전용이라 못 쓴다」 | **[공지2] 확정** — 캐시·출력은 `/home/jovyan` 하위에. dataset 하위 쓰기 금지 | §6-1 |
+| 13 | 데이터셋 복사·압축·외부 학습 | [미명시] | **[공지3]** ZIP/TAR·분할·불필요 복사 **지양**, 외부 학습은 재현성 검증에서 **불리**, 삭제 시 `~/.local/share/Trash` 까지 확인 | §5-2 |
 
 **여전히 [미명시]로 남는 것** — §7 의 2·3·4·5·6번. [공지] 는 transductive 사용·pseudo-labeling·
 자체 사전학습·다중 모델 `model.pth`·Public/Private 가중치 어느 것도 언급하지 않았다.
