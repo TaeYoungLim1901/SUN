@@ -1,0 +1,43 @@
+{
+  "task": {
+    "input_images": "20 time points at 6-hour cadence over previous 5 days",
+    "input_channels": [
+      "193A",
+      "211A"
+    ],
+    "input_wind": "20 values at 6-hour cadence over previous 5 days",
+    "target": "12 values at 6-hour cadence, horizons 6-72 hours"
+  },
+  "format": {
+    "images": "original PNG bytes; filenames anonymized",
+    "inputs": "one CSV row per sample",
+    "train_targets": "train/targets.csv",
+    "validation_targets": "validation/targets.csv",
+    "train_validation_split": "fixed, physically separated public directories",
+    "test_targets_public": false,
+    "numpy_arrays": false
+  },
+  "counts": {
+    "train_samples": 9607,
+    "validation_samples": 1199,
+    "test_samples": 3868,
+    "train_png_per_channel": 10139,
+    "validation_png_per_channel": 1408,
+    "test_png_per_channel": 4115
+  },
+  "anonymization": {
+    "dates_in_public_files": false,
+    "image_timestamp_mapping_randomized": true,
+    "sample_order_randomized": true
+  },
+  "source_audit": {
+    "wind_points": 15502,
+    "unique_193_images": 15482,
+    "unique_211_images": 15485,
+    "paired_images": 15482,
+    "duplicate_nominal_images": {
+      "193": 17,
+      "211": 17
+    }
+  }
+}

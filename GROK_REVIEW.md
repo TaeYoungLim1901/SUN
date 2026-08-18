@@ -62,7 +62,9 @@ SKIP: id — 이유
 
 ## 2. 현재 사실 (외울 것. 파일 다시 열지 마라)
 
-- 본선 2026-08-18–21. A100 1대. test 3,868행. Public/Private = test 절반(명목 12.5+12.5).
+- 본선 2026-08-18–21. **A100-SXM4-40GB 1대**(측정 확인). test 3,868행. Public/Private = test 절반(명목 12.5+12.5).
+- **2026-08-18 본선 공지(`ADDRULES.md`) 반영 완료.** 델타는 `RULES.md` §8. 핵심 셋:
+  validation 을 train 에 합치면 **실격** / pseudo-labeling **NO-GO**(「추정」) / 샘플코드는 `/home/jovyan/sample_code.ipynb` Duplicate.
 - Persistence 보조지표 = **last-value 72h 유지** (`persistence_last`). 27일 지속성은 입력에 없다.
 - 영상 창 span = `(20-1)×6h = 114h` → 자전 ≈ **63.3°**. 66.7°는 21프레임일 때.
 - CH 피처는 **target 시각 기준** t−4..7d. t−7d는 단기 horizon에서 창 밖 (`DOMAIN` §9.2 표, 산술 맞음).
