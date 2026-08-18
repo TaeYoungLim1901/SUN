@@ -65,6 +65,10 @@ SKIP: id — 이유
 - 본선 2026-08-18–21. **A100-SXM4-40GB 1대**(측정 확인). test 3,868행. Public/Private = test 절반(명목 12.5+12.5).
 - **2026-08-18 본선 공지(`ADDRULES.md`) 반영 완료.** 델타는 `RULES.md` §8. 핵심 셋:
   validation 을 train 에 합치면 **실격** / pseudo-labeling **NO-GO**(「추정」) / 샘플코드는 `/home/jovyan/sample_code.ipynb` Duplicate.
+- **Day 1(08-18) 종료 상태.** 제출 1장 준비 완료(서버 `/home/jovyan/submission/`, 재현 비트일치 확인).
+  validation RMSE: persistence 87.59 / 공식 베이스라인 78.12 / 풍속만 74.99 / 결합 **64.76**.
+  LB 1위 57.61 · 5위 62.34 · 6위 72.98. 다음 순서는 `SUN_PLAN.md` Day 2 절.
+  서버 접속은 `CONNECT.md`, 제출 전 검사는 `python tools/submit.py`.
 - Persistence 보조지표 = **last-value 72h 유지** (`persistence_last`). 27일 지속성은 입력에 없다.
 - 영상 창 span = `(20-1)×6h = 114h` → 자전 ≈ **63.3°**. 66.7°는 21프레임일 때.
 - CH 피처는 **target 시각 기준** t−4..7d. t−7d는 단기 horizon에서 창 밖 (`DOMAIN` §9.2 표, 산술 맞음).
