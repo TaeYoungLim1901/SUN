@@ -29,6 +29,8 @@ TAG = sys.argv[2] if len(sys.argv) > 2 else "cnn96"
 SEED = int(sys.argv[3]) if len(sys.argv) > 3 else 777
 EPOCHS = int(sys.argv[4]) if len(sys.argv) > 4 else 40
 HSS_W = float(sys.argv[5]) if len(sys.argv) > 5 else 1.0  # y>600 셀 가중. 1 이면 기존과 동일
+LAST = int(sys.argv[6]) if len(sys.argv) > 6 else 20     # 최근 N 프레임만. 20 이면 기존과 동일
+NORM = sys.argv[7] if len(sys.argv) > 7 else "z"         # z=전역 zscore · med=이미지 disk-median
 IMG = [f"image_{i:02d}" for i in range(20)]
 W = [f"wind_{i:02d}" for i in range(20)]
 T = [f"target_{i:02d}" for i in range(12)]
@@ -68,7 +70,9 @@ def cache(split, inputs):
 def pack(split, inputs):
     idx, arr = cache(split, inputs)
     slots = np.stack([[idx[v] for v in inputs[col]] for col in IMG], axis=1)   # (N,20)
-    assert slots.shape == (len(inputs), 20)
+    if LAST < 20:
+        slots = slots[:, -LAST:]
+    assert slots.shape == (len(inputs), LAST)
     return torch.from_numpy(arr).to(DEV), torch.from_numpy(slots).long().to(DEV)
 
 
@@ -127,7 +131,18 @@ va_y = pd.read_csv(ROOT / "validation/targets.csv")[T].to_numpy(np.float32)
 data = {s: pack(s, x) for s, x in (("train", tr_x), ("validation", va_x), ("test", te_x))}
 mean = data["train"][0].float().mean().item()
 std = data["train"][0].float().std().item()
-print(f"{PX}px cache ready · pixel mean={mean:.1f} std={std:.1f}", flush=True)
+if NORM == "med":
+    # DOMAIN §9.3: 절대 스케일 confound 를 disk-median 으로 상쇄. 디스크 근사 = 중앙 원.
+    yy, xx = torch.meshgrid(torch.arange(PX, device=DEV), torch.arange(PX, device=DEV), indexing="ij")
+    disk = ((yy - PX / 2 + 0.5) ** 2 + (xx - PX / 2 + 0.5) ** 2) <= (0.47 * PX) ** 2
+    for s in data:
+        arr, slots = data[s]
+        a = arr.float()
+        med = a[:, :, disk].median(-1).values[:, :, None, None]
+        a = a / med.clamp(min=1.0)
+        data[s] = (a.to(memory_format=torch.channels_last), slots)
+    mean, std = 1.0, 0.35
+print(f"{PX}px cache ready · pixel mean={mean:.1f} std={std:.1f} last={LAST} norm={NORM}", flush=True)
 
 wf = {s: torch.from_numpy(wind_feats(x)).to(DEV)
       for s, x in (("train", tr_x), ("validation", va_x), ("test", te_x))}

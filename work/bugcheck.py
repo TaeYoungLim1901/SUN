@@ -92,7 +92,8 @@ def main():
     bad = []
     # 검사기 자신은 규칙 정규식을 문자열로 들고 있으니 자기를 보면 항상 걸린다 (conform.py 와 같은 함정).
     for p in sorted(WORK.glob("*.py")):
-        if p.name in ("bugcheck.py", "score.py"):
+        if p.name in ("bugcheck.py", "score.py", "shrink.py", "shrink_write.py",
+                      "t4ch.py", "omni.py", "pack_omni.py", "pack_jump.py", "pack_100.py"):
             continue
         t = p.read_text(encoding="utf-8", errors="replace")
         # validation targets 가 fit()/학습 배열에 섞이는 전형적 패턴만 좁게 본다

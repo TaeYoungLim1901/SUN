@@ -40,6 +40,8 @@ CLIP = (200.0, 900.0)   # 지구 근처 태양풍의 물리적 범위 (RULES.md 
 DARK_V1, GRID_V1 = (20, 40, 60), 2
 DARK_V2, GRID_V2 = (15, 25, 40, 60, 80), 4
 AU_KM = 1.495978707e8
+AU_HOURS = 41556.0      # 1 AU / (1 km/s) 시간. E016 j* 정합
+NGLOBAL_V2 = 2 * (4 + len(DARK_V2))
 V_HYP = (300.0, 350.0, 400.0, 450.0, 500.0, 600.0, 700.0)
 REL = (0.35, 0.45, 0.55, 0.70)
 # 결합 가중치. kit.hill_climb 이 validation 원성분 6개에서 고른 값.
@@ -196,6 +198,42 @@ def sample_feats_v2(split, inputs):
         w[:, -1] - w[:, -2], w[:, -1] - w[:, -4], w[:, -4:].mean(1), w[:, -8:].mean(1),
         seq[:, -1], seq.mean(1), seq[:, -4:].mean(1) - seq[:, :4].mean(1), seq.std(1),
         key[:, -8:].reshape(len(w), -1),
+    ])
+
+
+def align_seq(split, inputs):
+    """v2 시점별 스칼라에서 정합에 쓰는 전역+서쪽 스트립만. E016."""
+    idx, per = image_scalars_v2(split, inputs)
+    seq = np.stack([per[[idx[v] for v in inputs[col]]] for col in IMG], axis=1)
+    return np.concatenate([seq[:, :, :NGLOBAL_V2], seq[:, :, -32:]], axis=2)
+
+
+def align_gather(seq, j):
+    j = np.clip(j, 0, 19)
+    lo = np.floor(j).astype(int)
+    hi = np.minimum(lo + 1, 19)
+    t = (j - lo).astype(np.float32)[:, None]
+    r = np.arange(len(seq))
+    return seq[r, lo] * (1 - t) + seq[r, hi] * t
+
+
+def align_block(seq, w, h):
+    cols = []
+    for v in (w[:, -1], w[:, -8:].mean(1)):
+        tau = AU_HOURS / np.maximum(v, 200.0)
+        js = 19 + (6 * (h + 1) - tau) / 6.0
+        cols += [align_gather(seq, js), tau[:, None], js[:, None],
+                 align_gather(seq, js) - align_gather(seq, np.full_like(js, 19.0))]
+    return np.column_stack(cols)
+
+
+def t4_block(seq, h):
+    """target 기준 t−4d = 프레임 h+4. DOMAIN §9.2."""
+    j = int(np.clip(h + 4, 0, 19))
+    lo, hi = max(j - 1, 0), min(j + 1, 19)
+    return np.column_stack([
+        seq[:, j], seq[:, lo], seq[:, hi],
+        seq[:, j] - seq[:, 19], seq[:, j] - seq[:, 0],
     ])
 
 
@@ -362,6 +400,9 @@ if MODE == "train":
     train_targets = pd.read_csv(ROOT / "train/targets.csv")[T].to_numpy(np.float64)
     X1 = sample_feats_v1("train", train_inputs)
     X2 = sample_feats_v2("train", train_inputs)
+    last_tr = train_inputs[W[-1]].to_numpy(np.float64)
+    aseq_tr = align_seq("train", train_inputs)
+    w_tr = train_inputs[W].to_numpy(np.float64)
     seq_tr = eswf_seq("train", train_inputs)
     print("feature dims", X1.shape, X2.shape, seq_tr.shape, flush=True)
 
@@ -372,10 +413,11 @@ if MODE == "train":
             max_iter=500, learning_rate=0.06, max_leaf_nodes=31,
             early_stopping=True, validation_fraction=0.12,
             random_state=SEED).fit(X1, train_targets[:, h]))
+        Xo = np.column_stack([X2, t4_block(aseq_tr, h), align_block(aseq_tr, w_tr, h)])
         gbdt_v2.append(HistGradientBoostingRegressor(
             max_iter=700, learning_rate=0.05, max_leaf_nodes=31, l2_regularization=1.0,
             early_stopping=True, validation_fraction=0.12, n_iter_no_change=30,
-            random_state=SEED).fit(X2, train_targets[:, h]))
+            random_state=SEED).fit(Xo, train_targets[:, h] - last_tr))
         Xe = eswf_feats(seq_tr, train_inputs, 6.0 * (h + 1))
         gbdt_eswf.append(HistGradientBoostingRegressor(
             max_iter=700, learning_rate=0.05, max_leaf_nodes=31, l2_regularization=1.0,
@@ -395,7 +437,7 @@ if MODE == "train":
     torch.save({"ridge_v1": ridge_v1, "gbdt_v1": gbdt_v1, "gbdt_v2": gbdt_v2,
                 "gbdt_eswf": gbdt_eswf, "cnn": cnn,
                 "weights": WEIGHTS, "clip": CLIP, "seed": SEED, "px": PX,
-                "version": "v1v2-eswf-cnn96bw3"}, HERE / "model.pth")
+                "version": "v1-omni-eswf-cnn96bw3"}, HERE / "model.pth")
     print("saved model.pth")
 
 blob = torch.load(HERE / "model.pth", map_location="cpu", weights_only=False)
@@ -415,13 +457,20 @@ WEIGHTS = {k: float(_w.get(k, _w.get(_alias.get(k, k), WEIGHTS[k]))) for k in WE
 
 def predict(split, inputs):
     f1, f2 = sample_feats_v1(split, inputs), sample_feats_v2(split, inputs)
+    last = inputs[W[-1]].to_numpy(np.float64)[:, None]
+    aseq = align_seq(split, inputs)
+    w = inputs[W].to_numpy(np.float64)
     seq = eswf_seq(split, inputs)
     pe = np.column_stack([
         blob["gbdt_eswf"][h].predict(eswf_feats(seq, inputs, 6.0 * (h + 1)))
         for h in range(12)])
+    # gbdt_v2 슬롯 = omni (t−4d + j* + 잔차)
+    pj = last + np.column_stack([
+        blob["gbdt_v2"][h].predict(np.column_stack([f2, t4_block(aseq, h), align_block(aseq, w, h)]))
+        for h in range(12)])
     p = (WEIGHTS["ridge_v1"] * blob["ridge_v1"].predict(f1)
          + WEIGHTS["gbdt_v1"] * np.column_stack([m.predict(f1) for m in blob["gbdt_v1"]])
-         + WEIGHTS["gbdt_v2"] * np.column_stack([m.predict(f2) for m in blob["gbdt_v2"]])
+         + WEIGHTS["gbdt_v2"] * pj
          + WEIGHTS["eswf"] * pe)
     cnn = blob["cnn"]
     for tag in ("cnn96b", "cnn96w3"):

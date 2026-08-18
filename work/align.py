@@ -74,15 +74,22 @@ def main():
     print("base", base["train"].shape, "seq", seq["train"].shape, flush=True)
 
     pv, pt = np.zeros_like(va_y), np.zeros((len(xs["test"]), 12))
+    models = []
     for h in range(12):
         X = {s: np.column_stack([base[s], aligned_block(seq[s], wind[s], h)]) for s in xs}
         m = HistGradientBoostingRegressor(
             max_iter=700, learning_rate=0.05, max_leaf_nodes=31, l2_regularization=1.0,
             early_stopping=True, validation_fraction=0.12, n_iter_no_change=30,
             random_state=SEED).fit(X["train"], tr_y[:, h])
+        models.append(m)
         pv[:, h] = m.predict(X["validation"])
         pt[:, h] = m.predict(X["test"])
         print(f"  h{h:02d} dim={X['train'].shape[1]} val={rmse(va_y[:, h], pv[:, h]):.2f}", flush=True)
+
+    torch_path = pathlib.Path("/home/jovyan/work/align_models.pth")
+    import torch
+    torch.save(models, torch_path)
+    print("saved", torch_path, torch_path.stat().st_size / 1e6, "MB", flush=True)
 
     np.save(OUT / f"val_{TAG}.npy", pv)
     np.save(OUT / f"test_{TAG}.npy", pt)

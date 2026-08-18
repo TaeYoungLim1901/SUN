@@ -14,3 +14,10 @@ factcheck/
 # 제출 백업 사본. 서버가 원본이고 매번 87MB 라 레포에 쌓으면 안 된다 (submit/README.md)
 submit/model.pth
 work/local_data/
+work/*.log
+work/_*.txt
+work/preds/
+tools/*.log
+tools/url_candidates.json
+tools/urls.txt
+tools/urls_todo.txt

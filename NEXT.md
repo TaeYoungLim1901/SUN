@@ -1,8 +1,7 @@
 # 다음 세션 시작점 — 모델이 누구든 이 파일부터
 
-**작성:** 2026-08-18 12:20 UTC, Opus 세션 종료. Grok 이 이어감.
-레버 2·3·4 전부 기각. 공지 2·3 반영 완료. **제출 실패 원인은 model.pth 용량이다 — §1.1 부터 해라.**
-`GROK_REVIEW.md` §3 문서 스텝 A–F 는 끝났다. 다시 하지 마라.
+**작성:** 2026-08-18 밤, Grok. **최고 Public 57.2951** (5→6위). jump 57.2985 동률.
+**다음 버튼 후보:** omni 팩 (t−4d+j*+잔차 동시, k=300, 76.5 MB, infer **63.702**). `GROK_REVIEW.md` A–F 끝.
 
 **읽기 예산:** 이 파일 + `RULES.md` §1·§8 + `DOMAIN.md` §9. 그 외는 필요할 때 지정 줄만.
 DOMAIN/PLAN/ONBOARDING/PLAYBOOK/POSTMORTEM 전문 금지.
@@ -16,15 +15,17 @@ DOMAIN/PLAN/ONBOARDING/PLAYBOOK/POSTMORTEM 전문 금지.
 | persistence | 87.59 | - |
 | 대회 베이스라인 3D-CNN+LSTM | 78.12 | - |
 | 풍속 20개만 | 74.99 | - |
-| **어제 제출본** (스칼라 3종) | 64.76 | **59.6608** |
-| **제출 폴더에 대기 중** (ESWF+CNN 6종) | **63.751** | 아직 안 누름 |
+| **어제 제출본** (스칼라 3종) | 64.76 | 59.6608 |
+| 풀트리 6종 (197 MB) | 63.751 | 용량 거부 |
+| **최고** (zlib+k=300 6종) | **63.784** | **57.2951** |
+| pack100 (풀트리 zlib + align→v2) | 63.730 | 57.4725 |
+| E019 jump→v2 (k=300 zlib) | 63.722 | **57.2985** |
 
-공개 LB 상위: 57.61 / 59.34 / 59.55 / **우리 59.66** / 60.20 / 62.34 / 72.98 …
-**제출 상태 (2026-08-18 11:49 UTC 확인):** 사람이 오늘 버튼을 **2회** 눌렀으나 점수가 안 뜬다.
-어제치 59.6608 이 **2줄** 올라가 있는데 이것도 랙으로 인한 중복 제출로 보인다 — 하루 5회에서 이미 깎였을 수 있다.
-누를 당시 서버는 유휴였다 (load 0.23, GPU 6 MiB, 학습 프로세스 0). **「작업 중이라 실패」가 아니다.**
-파일 3종 무결: `submission.csv` 3,869줄(헤더+3,868), md5 `1674f097…`, `code.ipynb` `e578d39b…`, `model.pth` `cb183c0d…` (197 MB).
-`RULES.md` §2 에 "평가 완료까지 시간이 걸릴 수 있음" 이 공식 문구로 있다. **더 누르지 마라 — 한도만 태운다.** 운영진 문의가 먼저다.
+공개 상위: 56.9342 / 56.9949 / 57.1681 / 57.2215 / **우리 57.2951** / 57.5318 / 57.6114 / 57.7067
+pack100 은 로컬 −0.054, Public **+0.177**. 풀트리·align 교체는 일반화가 아니었다.
+**마지막 제출은 57.2951 본(k=300)을 바닥으로.** 로컬 0.05짜리 재탕 금지.
+QnA 원 한도 50 MiB(52,428,800). 주최가 올렸고 70.8 MB 는 통과. 197 MB·149 MB 는 예전에 거부.
+70.8 MB 사본: 서버 `work/pack_win_57/`. `submission/` 은 pack100 으로 교체됨 (bugcheck 통과).
 
 **Public 과 로컬 val 을 직접 비교하지 마라.** 채택은 같은 split 의 Δ 만.
 
@@ -32,51 +33,39 @@ DOMAIN/PLAN/ONBOARDING/PLAYBOOK/POSTMORTEM 전문 금지.
 
 ## 1. 제출 폴더 (버튼만 누르면 됨)
 
-`/home/jovyan/submission/` 2026-08-18 11:31 UTC 판. bugcheck C1–C5 **통과**.
+`/home/jovyan/submission/` = **omni 팩** (bugcheck C1–C5 통과). 57.2951 본은 `work/pack_win_57/`.
 
 | 파일 | 크기 | |
 |---|---|---|
-| `code.ipynb` | 25,497 | `work/pipeline.py` → `mknb`. infer 기본. ESWF+CNN 포함 |
-| `model.pth` | 197,254,746 | ridge_v1+gbdt_v1+gbdt_v2+gbdt_eswf+cnn96b+cnn96w3 |
-| `submission.csv` | 943,594 | 3,868행, min 275 max 715 |
+| `code.ipynb` | 28,191 | t−4d + j* + 잔차 + zlib |
+| `model.pth` | 76,516,122 | k=300 zlib, v2 자리 = omni |
+| `submission.csv` | 943,541 | 3,868행, min 272.3 max 721.8 |
 
-가중치 (pth 키 = 노트북 키, **맞춰 둠**):
-`ridge_v1 0.125 + gbdt_v1 0.25 + gbdt_v2 0.125 + eswf 0.25 + cnn96b 0.125 + cnn96w3 0.125`
+가중치 그대로. `gbdt_v2` 키 = omni (839 + t−4d + j*, 타깃=잔차). infer val **63.702**.
 
-한 번 키가 `img_ridge`/`ridge_v1` 로 갈라져 추론이 죽을 뻔했다. `pipeline.py` 에 alias 를 넣었고 pth 키를 고쳤다. **다시 갈라지지 마라.**
+원본 197 MB 는 `work/model.pth.bak`. 팩 백업 `work/pack_out/` + 로컬 `submit/`.
+pth 키 alias (`img_ridge`/`ridge_v1`) 유지. **다시 갈라지지 마라.**
+**pth 포맷은 pipeline/pack 양쪽이 같이 알아야 한다 — 한쪽만 고치지 마라.**
 
-백업: `/home/jovyan/work/pack_out/` 동일 3종.
+### 1.1 용량 — **닫힘**
 
-### 1.1 제출이 안 나가는 이유 = **model.pth 197 MB** (다음 세션 1순위)
+운영진: 모델 파일 줄여보라. 측정 결과 (결합 RMSE, 손실선 0.05):
 
-운영진 QNA 답변: 제출 오류에 **모델 파일 용량을 줄여보라**. 우리 pth 구성(pickle 기준):
-`gbdt_eswf 82.2` + `gbdt_v2 47.5` + `gbdt_v1 25.3` + `cnn 7.5` = 162.5 MB → 디스크 197 MB.
-어제 성공한 제출은 스칼라 3종이라 훨씬 작았다. 상한 수치는 공지에 없다 — 측정해서 줄인다.
+| | v1 | v2 | eswf | **blend** | pth |
+|---|---|---|---|---|---|
+| full | 68.628 | 67.022 | 67.028 | **63.751** | 197 MB |
+| zlib only | 같음 | 같음 | 같음 | 63.751 | ~65 MB 예상 |
+| **k=300+zlib** | 68.549 | 66.798 | 66.865 | **63.784** (+0.033) | **70.8 MB** |
+| k=200 | 68.643 | 66.685 | 66.692 | 63.859 (+0.108) | 기각 |
 
-**준비 끝난 것 (로컬에 있음, 서버 업로드만 남음):**
-
-| 파일 | 상태 |
-|---|---|
-| `work/shrink.py` | **업로드 필요.** 측정 전용 실행 + `--write K` 로 재작성 |
-| `work/pipeline.py:402` | `compressed` 플래그면 zlib 해제. **수정 완료** |
-| `work/pack.py` | 앞으로 만드는 pth 도 zlib 저장. **수정 완료** |
-
-손잡이 둘뿐이다. ① sklearn 파트 **zlib** (정확도 손실 0) ② HistGBDT `_predictors` 앞 k 개 절단
-(부스팅 라운드 축소, 손실은 validation 으로 잰다 — 모델 선택 용도는 규정상 허용, RULES §5-1).
-
-```bash
-python tools/remote.py put work/shrink.py work/shrink.py
-python tools/remote.py run -c "import subprocess; subprocess.Popen('cd /home/jovyan/work && nohup python shrink.py > shrink.log 2>&1 &', shell=True)"
-# 표 보고 손실 0.05 이내 최소 k 선택 → --write K → mknb 재생성 → tools/submit.py → 사람이 버튼
-```
-
-`--write` 는 원본을 `submission/model.pth.bak` 로 남긴다. **pth 포맷은 pipeline/pack 양쪽이 같이 알아야 한다 — 한쪽만 고치지 마라.**
+단독은 라운드를 자를수록 좋아졌고 결합은 나빠졌다. k=300 이 선 안의 최소.
+`pipeline.py:402` / `pack.py` 는 zlib. `work/shrink.py` 는 측정, `shrink_write.py` 가 실제 기록.
 
 ---
 
 ## 2. 서버에 있는 예측
 
-GPU 비어 있음. 학습 프로세스 없음.
+GPU 유휴. pack100 infer 끝 (val 63.730). `align_models.pth` 63.8 MB 저장됨.
 
 | 태그 | val RMSE | 비고 |
 |---|---|---|
@@ -112,18 +101,19 @@ HSS 병목은 **도착**(last wind 중앙값 494, train 713행이 lw<500 & peak>
 
 ---
 
-## 4. 다음 레버 (이 순서로)
+## 4. 다음 레버 — 마지막 제출 1회 (11:40)
 
-1. **사람이 제출 버튼을 누른다.** 학습 중 금지 — 지금 학습 없음. 누른 뒤 Public 을 §0 에 적어라.
-2. ~~`hssq65` 결합~~ **판정 끝(E014b).** 63.751 → 63.657 (−0.09). ρ(v2_gbdt)=0.965 로 v2 자리를 갈아끼울 뿐이고,
-   로컬 후보 전부 넣은 상한도 63.655 다. **재가중 축은 고갈됐다.** 파이프라인·pth 키를 건드릴 값이 아니다.
-3. ~~`rotter.py` / `chtrack.py`~~ **둘 다 기각(E013 96.197 / E012 71.979).** 실행했고 hill_climb 이 안 뽑았다.
-4. ~~193+211 k-means CH 분할~~ **기각(E015).** 71.432 · ρ(img_blend) 0.875. 군집 자체는 물리적으로 맞았다
-   (CH 0.20/0.42 · 조용 0.99/0.99 · AR 1.77/1.50, CH 면적 20%). **분할 방식이 아니라 디스크 요약통계 족이 고갈이다.**
-5. **E016 = `work/align.py` (업로드만 하면 됨).** E007 재개 조건 그대로 — 창을 좁히지 말고 j*·τ 를 **추가 피처로만**.
-   v2 839피처 유지 + horizon 마다 τ=1AU/v 로 계산한 발사 슬롯 j*(h) 스칼라를 선형보간해 덧붙인다
-   (속도 가설 둘: 마지막 풍속 / 최근 8슬롯 평균). **채택선: v2_gbdt 67.022 를 이길 것** — 같은 피처의 상위집합이라
-   ρ 는 볼 필요 없고, 이기면 v2 자리를 대체한다. 제출 팩이 끝난 **뒤에** 던져라 (학습 중 제출 금지).
+1. ~~k=300~~ **57.2951 (5위).** `work/pack_win_57/`.
+2. ~~pack100~~ **57.4725. 기각(Public).** 로컬 이득이 Public 에서 뒤집힘.
+3. ~~E017 chfeat~~ **기각.** 67.249, hill 이 안 뽑음. ρ(v2)=0.980.
+4. ~~E018 arrive~~ **기각 67.886.** hill 안 뽑음.
+5. ~~cnnlate~~ **기각 69.461.** 결합 −0.028 뿐. 안 냄.
+6. ~~E019 jump~~ **Public 57.2985.** 동률. 최고 57.2951.
+7. **E021 omni 팩 준비됨.** 단독 66.476, 고정가중 63.674, infer k=300 **63.702**, 76.5 MB.
+   버튼은 사람이. Public 이 57.2951 을 못 이기면 이 축(스칼라 동시투입)도 접는다.
+   cnnmed 68.108 단독 이김, 결합 −0.021 기각.
+8. 내일: 픽셀/모션(광류) 또는 Hofmeister CH **폭→지속시간**. 요약통계 동시투입은 여기까지.
+9. 깃허브 3회 솔루션 0. 1·2회는 탐지. 닫힌 것: align/jump 재제출, hssq65 재가중, rotter, chtrack 단독, k-means, persist/시프트, 197 MB.
 
 Box-Cox 금지. persist/시프트/가중 ESWF 재개 금지.
 

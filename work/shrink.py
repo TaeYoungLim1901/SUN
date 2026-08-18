@@ -86,6 +86,25 @@ def main():
             line.append(f"k={k}: {rmse(va_y, predict(t, g)):.3f}/{blob_size(t) / 1e6:.0f}MB")
         print("  ".join(line), flush=True)
 
+    # 결합 점수 — 절단이 단독을 낮춰도 결합이 오르면 안 쓴다
+    PRED = pathlib.Path("/home/jovyan/work/preds")
+    ridge = np.load(PRED / "val_img_ridge.npy")
+    cnnb = np.load(PRED / "val_cnn96b.npy")
+    cnnw = np.load(PRED / "val_cnn96w3.npy")
+    ww = {"r": 0.125, "v1": 0.25, "v2": 0.125, "es": 0.25, "cb": 0.125, "cw": 0.125}
+
+    def blend(k=None):
+        p = (ww["r"] * ridge
+             + ww["v1"] * predict(blob["gbdt_v1"], "gbdt_v1", k)
+             + ww["v2"] * predict(blob["gbdt_v2"], "gbdt_v2", k)
+             + ww["es"] * predict(blob["gbdt_eswf"], "gbdt_eswf", k)
+             + ww["cb"] * cnnb + ww["cw"] * cnnw)
+        return rmse(va_y, np.clip(p, 200.0, 900.0))
+
+    print(f"blend full {blend():.3f}", flush=True)
+    for k in KS:
+        print(f"blend k={k} {blend(k):.3f}", flush=True)
+
     if a.write:
         k = a.write
         new = dict(blob)
