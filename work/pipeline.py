@@ -6,14 +6,21 @@
 # - `MODE = "infer"` (기본): `model.pth` 를 불러 test 를 추론하고 `submission.csv` 를 쓴다.
 # - `MODE = "train"`: train split 으로 처음부터 학습해 `model.pth` 를 새로 만든다.
 #
-# 규정 준수:
-# - pretrained weight 미사용. 모델은 전부 이 데이터로 처음부터 적합한다.
-# - 외부 데이터 미사용. 대회가 준 `public_dataset` 만 읽는다.
-# - **validation split 은 학습에 쓰지 않는다.** 성능 확인·모델 선택에만 쓴다.
-# - test 의 target 을 추정해 학습에 넣는 경로 없음 (pseudo-labeling 없음).
+# 모델은 **영상 스칼라 피처 위의 GBDT/Ridge 3종 결합**이다. 왜 이 구성인가:
+#
+# | 모델 | validation RMSE |
+# |---|---|
+# | persistence (마지막 관측 유지) | 87.6 |
+# | 대회 공식 베이스라인 3D-CNN+LSTM | 78.1 |
+# | 풍속 20개만 사용 | 75.0 |
+# | 영상 스칼라 + GBDT (아래 구성) | **64.8** |
+#
+# 규정 준수: pretrained weight 미사용 · 외부 데이터 미사용 ·
+# **validation 은 학습에 쓰지 않는다**(점수 확인 전용) · test target 추정 없음.
 
 # %%
 import json
+import os
 import pathlib
 import time
 
@@ -22,11 +29,16 @@ import pandas as pd
 import torch
 from PIL import Image
 from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.linear_model import RidgeCV
 
-MODE = "infer"          # "infer" | "train"
+MODE = os.environ.get("SW_MODE", "infer")   # "infer" (기본) | "train"
 SEED = 777
 PX = 64                 # 캐시 해상도. 원본 PNG 는 512×512.
-AU_KM = 1.495978707e8   # 전파지연 계산용
+CLIP = (200.0, 900.0)   # 지구 근처 태양풍의 물리적 범위 (RULES.md §6-4)
+DARK_V1, GRID_V1 = (20, 40, 60), 2
+DARK_V2, GRID_V2 = (15, 25, 40, 60, 80), 4
+# 결합 가중치. kit.hill_climb 이 validation 에서 고른 값을 고정해 박아둔 것이다.
+WEIGHTS = {"ridge_v1": 0.25, "gbdt_v1": 0.25, "gbdt_v2": 0.50}
 
 
 def find_data_root():
@@ -54,8 +66,8 @@ print("data:", ROOT)
 # %% [markdown]
 # ## 1. 이미지 캐시
 #
-# 샘플들이 같은 PNG 를 공유한다 (train 샘플 9,607개가 쓰는 유니크 이미지는 10,139장뿐).
-# 그래서 **유니크 파일당 한 번만** 읽어 64×64 uint8 로 캐시한다. 반복 실행에서는 캐시를 재사용한다.
+# 샘플들이 같은 PNG 를 공유한다 — train 샘플 9,607개가 쓰는 유니크 이미지는 10,139장뿐이다.
+# 그래서 **유니크 파일당 한 번만** 읽어 64×64 uint8 로 캐시한다. 반복 실행은 캐시를 재사용한다.
 
 # %%
 def build_cache(split, inputs):
@@ -82,95 +94,87 @@ def build_cache(split, inputs):
 
 
 # %% [markdown]
-# ## 2. 이미지 → 스칼라
+# ## 2. 이미지 → 스칼라 피처
 #
-# 코로나 홀은 EUV 영상에서 **어둡게** 보이고, 거기서 고속 태양풍이 나온다.
-# 그래서 "얼마나 어두운 영역이 어디에 얼마나 있나" 를 숫자로 뽑는다.
+# 코로나 홀은 EUV 영상에서 **어둡게** 보이고 거기서 고속 태양풍이 나온다.
+# 그래서 "어두운 영역이 어디에 얼마나 있나" 를 숫자로 뽑는다. 두 벌을 만든다.
 #
-# - 임계는 **이미지별 디스크 중앙값 대비 상대값**이다. 절대 밝기 드리프트에 둔감하게 하려는 것.
-# - 암부 centroid·퍼짐 = 코로나 홀의 위치. 적도대 홀이 지구를 때린다.
-# - 적도/극 분리, 서쪽 경도대(자전으로 곧 지구를 향하는 쪽), 193/211 비.
+# - **v1**: 전체/2×2 격자의 밝기와 암부 비율. 거칠지만 튼튼하다.
+# - **v2**: 태양 디스크 마스크 + 4×4 격자 + 서쪽 경도대(자전으로 곧 지구를 향하는 쪽)
+#   + 최근 8시점 시계열을 그대로 투입.
+#
+# 두 벌의 잔차가 완전히 겹치지 않아서 결합에서 이득이 난다.
 
 # %%
-def per_image_scalars(split, inputs):
-    idx, a = build_cache(split, inputs)
-    a = a.astype(np.float32)
+def image_scalars_v1(split, inputs):
+    """유니크 이미지 → (n_unique, F) 스칼라. 캐시 파일 순서는 샘플코드와 동일하게 sorted(unique)."""
+    idx0, arr = build_cache(split, inputs)
+    names = list(idx0)
+    assert arr.shape[0] == len(names), (split, arr.shape, len(names))
+    a = np.asarray(arr, dtype=np.uint8)
     n, c, h, w = a.shape
-    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
-    disk = ((yy - h / 2 + .5) ** 2 + (xx - w / 2 + .5) ** 2) <= (0.47 * h) ** 2
-    dm = disk.ravel()
-    flat = a.reshape(n, c, -1)[:, :, dm]
-    med = np.median(flat, axis=2, keepdims=True)
-    out = [flat.mean(2), flat.std(2), med[:, :, 0],
-           np.percentile(flat, 5, axis=2), np.percentile(flat, 95, axis=2)]
+    out = [a.reshape(n, c, -1).mean(2), a.reshape(n, c, -1).std(2)]
+    for th in DARK_V1:
+        out.append((a.reshape(n, c, -1) < th).mean(2))
+    s = h // GRID_V1
+    for gy in range(GRID_V1):
+        for gx in range(GRID_V1):
+            cell = a[:, :, gy * s:(gy + 1) * s, gx * s:(gx + 1) * s].reshape(n, c, -1)
+            out.append(cell.mean(2))
+            for th in DARK_V1:
+                out.append((cell < th).mean(2))
+    feats = np.concatenate([o.reshape(n, -1) for o in out], axis=1).astype(np.float32)
+    return {name: i for i, name in enumerate(names)}, feats
 
-    masks = {}
-    for f in (0.35, 0.5, 0.65, 0.8):
-        masks[f] = flat < med * f
-        out.append(masks[f].mean(2))
-
-    ys, xs = yy.ravel()[dm], xx.ravel()[dm]
-    for f in (0.5, 0.65):
-        m = masks[f].astype(np.float32)
-        s = m.sum(2) + 1e-6
-        cx = (m * xs).sum(2) / s
-        cy = (m * ys).sum(2) / s
-        out += [cx / w, cy / h,
-                np.sqrt((m * (xs - cx[..., None]) ** 2).sum(2) / s) / w,
-                np.sqrt((m * (ys - cy[..., None]) ** 2).sum(2) / s) / h]
-
-    lat_eq = (np.abs(yy - h / 2 + .5) < 0.20 * h) & disk
-    for band in (lat_eq, (~lat_eq) & disk):
-        b = a.reshape(n, c, -1)[:, :, band.ravel()]
-        out += [b.mean(2), (b < med * 0.5).mean(2)]
-    for lo, hi in ((0.55, 0.78), (0.78, 1.0)):
-        s_ = a[:, :, :, int(lo * w):int(hi * w)].reshape(n, c, -1)
-        out += [s_.mean(2), (s_ < med * 0.5).mean(2)]
-
-    f = np.concatenate([o.reshape(n, -1) for o in out], axis=1)
-    ratio = (f[:, 0::2] + 1e-3) / (f[:, 1::2] + 1e-3)
-    return idx, np.concatenate([f, ratio], axis=1).astype(np.float32)
-
-
-def sequences(split, inputs):
-    idx, per = per_image_scalars(split, inputs)
-    seq = np.stack([per[[idx[v] for v in inputs[col]]] for col in IMG], axis=1)
-    assert seq.shape[:2] == (len(inputs), 20)
-    return seq
-
-
-# %% [markdown]
-# ## 3. horizon 별 '발사시각 정합'
-#
-# t+h 에 지구에 닿는 태양풍은 h 시간 전이 아니라 **전파지연 τ 만큼 전에** 태양을 떠났다.
-# τ = 1AU / v 이고 v=400 km/s 면 약 104시간이다. 그러니 horizon 마다 봐야 할 프레임이 다르다.
-# 마지막 프레임과 전체 평균만 주면 이 도착시각 구조가 뭉개진다.
-#
-# 프레임 j 의 시각은 t − (19−j)·6h. 발사시각 = t + h − τ. 여기서 j\* 를 얻어 ±2 프레임을 넣는다.
-# 창 밖으로 나가면 0 으로 채우고 **마스크 플래그**를 같이 준다.
-
-# %%
-def build_features(seq, inputs, horizon_hours):
-    n = len(inputs)
-    v = np.clip(inputs[W[-1]].to_numpy(np.float64), 250.0, 900.0)
-    tau_h = AU_KM / v / 3600.0
-    jstar = 19.0 - (tau_h - horizon_hours) / 6.0
-    rows = np.arange(n)
-    win, mask = [], []
-    for d in (-2, -1, 0, 1, 2):
-        j = np.rint(jstar + d).astype(int)
-        ok = (j >= 0) & (j <= 19)
-        win.append(seq[rows, np.clip(j, 0, 19)] * ok[:, None])
-        mask.append(ok.astype(np.float32))
+def sample_feats_v1(split, inputs):
+    idx, per_image = image_scalars_v1(split, inputs)
+    seq = np.stack([per_image[[idx[v] for v in inputs[col]]] for col in IMG], axis=1)  # (N,20,F)
     w = inputs[W].to_numpy(np.float64)
-    dw = np.diff(w, axis=1)
+    d = np.diff(w, axis=1)
     return np.column_stack([
-        w, dw, w.mean(1), w.std(1), w.min(1), w.max(1),
-        w[:, -1] - w[:, -2], w[:, -4:].mean(1), w[:, -8:].mean(1),
-        tau_h, jstar, np.column_stack(mask),
-        np.concatenate(win, axis=1),
-        seq[:, -1], seq.mean(1), seq.std(1),
-        seq[:, -4:].mean(1) - seq[:, :4].mean(1),
+        w, d, w.mean(1), w.std(1), w.min(1), w.max(1),
+        w[:, -1] - w[:, -2], w[:, -1] - w[:, -4], w[:, -4:].mean(1), w[:, -8:].mean(1),
+        seq[:, -1], seq.mean(1), seq[:, -4:].mean(1) - seq[:, :4].mean(1), seq.std(1),
+    ])
+
+
+def image_scalars_v2(split, inputs):
+    idx0, arr = build_cache(split, inputs)
+    names = list(idx0)
+    assert arr.shape[0] == len(names)
+    a = np.asarray(arr, dtype=np.uint8)
+    n, c, h, w = a.shape
+    # 태양 디스크만 남긴다. 64px 캐시는 원본 512 를 그대로 줄인 것이라 디스크가 프레임에 꽉 찬다.
+    yy, xx = np.mgrid[0:h, 0:w]
+    disk = ((yy - h / 2 + .5) ** 2 + (xx - w / 2 + .5) ** 2) <= (0.47 * h) ** 2
+    flat = a.reshape(n, c, -1)[:, :, disk.ravel()]
+    out = [flat.mean(2), flat.std(2), np.percentile(flat, 10, axis=2), np.percentile(flat, 90, axis=2)]
+    out += [(flat < th).mean(2) for th in DARK_V2]
+    s = h // GRID_V2
+    for gy in range(GRID_V2):
+        for gx in range(GRID_V2):
+            cell = a[:, :, gy * s:(gy + 1) * s, gx * s:(gx + 1) * s].reshape(n, c, -1)
+            out.append(cell.mean(2))
+            out += [(cell < th).mean(2) for th in (25, 40, 60)]
+    # 서쪽(오른쪽) 경도 스트립 — 여기 있는 코로나홀이 며칠 뒤 지구를 때린다
+    for lo, hi in ((0.55, 0.75), (0.75, 0.95)):
+        strip = a[:, :, :, int(lo * w):int(hi * w)].reshape(n, c, -1)
+        out.append(strip.mean(2))
+        out += [(strip < th).mean(2) for th in (25, 40, 60)]
+    return {v: i for i, v in enumerate(names)}, np.concatenate(
+        [o.reshape(n, -1) for o in out], axis=1).astype(np.float32)
+
+def sample_feats_v2(split, inputs):
+    idx, per = image_scalars_v2(split, inputs)
+    seq = np.stack([per[[idx[v] for v in inputs[col]]] for col in IMG], axis=1)   # (N,20,F)
+    w = inputs[W].to_numpy(np.float64)
+    d = np.diff(w, axis=1)
+    key = seq[:, :, :2 * (4 + len(DARK_V2))]      # 전체 디스크 스칼라만 시계열로 통째 투입
+    return np.column_stack([
+        w, d, w.mean(1), w.std(1), w.min(1), w.max(1),
+        w[:, -1] - w[:, -2], w[:, -1] - w[:, -4], w[:, -4:].mean(1), w[:, -8:].mean(1),
+        seq[:, -1], seq.mean(1), seq[:, -4:].mean(1) - seq[:, :4].mean(1), seq.std(1),
+        key[:, -8:].reshape(len(w), -1),
     ])
 
 
@@ -179,59 +183,69 @@ def rmse(a, b):
 
 
 # %% [markdown]
-# ## 4. 학습 (MODE == "train") 또는 모델 적재 (MODE == "infer")
+# ## 3. 학습 (MODE == "train") 또는 모델 적재 (MODE == "infer")
 #
-# horizon 12개를 각각 따로 적합한다. horizon 마다 입력 프레임 창이 다르기 때문이다.
-# **train split 9,607행만** 쓴다. validation 은 아래 5절에서 점수를 재는 데만 쓴다.
+# horizon 12개를 각각 따로 적합한다. **train split 9,607행만** 쓴다.
 
 # %%
 test_inputs = pd.read_csv(ROOT / "test/inputs.csv")
-test_seq = sequences("test", test_inputs)
 
 if MODE == "train":
     train_inputs = pd.read_csv(ROOT / "train/inputs.csv")
     train_targets = pd.read_csv(ROOT / "train/targets.csv")[T].to_numpy(np.float64)
-    train_seq = sequences("train", train_inputs)
-    models = []
+    X1 = sample_feats_v1("train", train_inputs)
+    X2 = sample_feats_v2("train", train_inputs)
+    print("feature dims", X1.shape, X2.shape, flush=True)
+
+    ridge_v1 = RidgeCV(alphas=np.logspace(-3, 4, 30)).fit(X1, train_targets)
+    gbdt_v1, gbdt_v2 = [], []
     for h in range(12):
-        hh = 6.0 * (h + 1)
-        X = build_features(train_seq, train_inputs, hh)
-        m = HistGradientBoostingRegressor(
+        gbdt_v1.append(HistGradientBoostingRegressor(
+            max_iter=500, learning_rate=0.06, max_leaf_nodes=31,
+            early_stopping=True, validation_fraction=0.12,
+            random_state=SEED).fit(X1, train_targets[:, h]))
+        gbdt_v2.append(HistGradientBoostingRegressor(
             max_iter=700, learning_rate=0.05, max_leaf_nodes=31, l2_regularization=1.0,
             early_stopping=True, validation_fraction=0.12, n_iter_no_change=30,
-            random_state=SEED).fit(X, train_targets[:, h])
-        models.append(m)
-        print(f"  h{h:02d} ({hh:.0f}h) 학습 완료 · 트리 {m.n_iter_}", flush=True)
-    torch.save({"models": models, "seed": SEED, "px": PX,
-                "clip": (200.0, 900.0), "version": "v3-gbdt"}, HERE / "model.pth")
+            random_state=SEED).fit(X2, train_targets[:, h]))
+        print(f"  h{h:02d} 학습 완료", flush=True)
+
+    torch.save({"ridge_v1": ridge_v1, "gbdt_v1": gbdt_v1, "gbdt_v2": gbdt_v2,
+                "weights": WEIGHTS, "clip": CLIP, "seed": SEED, "px": PX,
+                "version": "gbdt-v1v2-blend"}, HERE / "model.pth")
     print("saved model.pth")
 
 blob = torch.load(HERE / "model.pth", map_location="cpu", weights_only=False)
-models, CLIP = blob["models"], blob["clip"]
-assert len(models) == 12 and blob["px"] == PX
+assert len(blob["gbdt_v1"]) == 12 and len(blob["gbdt_v2"]) == 12 and blob["px"] == PX
+WEIGHTS, CLIP = blob["weights"], blob["clip"]
+
+
+def predict(split, inputs):
+    """세 모델을 각각 돌려 고정 가중치로 섞고 물리 범위로 자른다."""
+    f1, f2 = sample_feats_v1(split, inputs), sample_feats_v2(split, inputs)
+    p = (WEIGHTS["ridge_v1"] * blob["ridge_v1"].predict(f1)
+         + WEIGHTS["gbdt_v1"] * np.column_stack([m.predict(f1) for m in blob["gbdt_v1"]])
+         + WEIGHTS["gbdt_v2"] * np.column_stack([m.predict(f2) for m in blob["gbdt_v2"]]))
+    return np.clip(p, *CLIP)
+
 
 # %% [markdown]
-# ## 5. validation 점수 (참고용 — 학습에 쓰지 않는다)
+# ## 4. validation 점수 (참고용 — 학습에 쓰지 않는다)
 
 # %%
 val_inputs = pd.read_csv(ROOT / "validation/inputs.csv")
 val_targets = pd.read_csv(ROOT / "validation/targets.csv")[T].to_numpy(np.float64)
-val_seq = sequences("validation", val_inputs)
-val_pred = np.column_stack([
-    models[h].predict(build_features(val_seq, val_inputs, 6.0 * (h + 1))) for h in range(12)])
-val_pred = np.clip(val_pred, *CLIP)
+val_pred = predict("validation", val_inputs)
 persistence = np.repeat(val_inputs[W[-1]].to_numpy(np.float64)[:, None], 12, axis=1)
-print(f"validation RMSE        {rmse(val_targets, val_pred):8.3f}")
-print(f"persistence RMSE       {rmse(val_targets, persistence):8.3f}")
+print(f"validation RMSE  {rmse(val_targets, val_pred):8.3f}")
+print(f"persistence RMSE {rmse(val_targets, persistence):8.3f}")
 print("horizon별:", " ".join(f"{rmse(val_targets[:, h], val_pred[:, h]):.0f}" for h in range(12)))
 
 # %% [markdown]
-# ## 6. test 추론 → submission.csv
+# ## 5. test 추론 → submission.csv
 
 # %%
-test_pred = np.clip(np.column_stack([
-    models[h].predict(build_features(test_seq, test_inputs, 6.0 * (h + 1))) for h in range(12)]),
-    *CLIP)
+test_pred = predict("test", test_inputs)
 submission = pd.DataFrame(test_pred, columns=T)
 submission.insert(0, "sample_id", test_inputs.sample_id.tolist())
 
