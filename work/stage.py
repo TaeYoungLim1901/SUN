@@ -7,6 +7,9 @@ import shutil
 import subprocess
 import sys
 
+import numpy as np
+import pandas as pd
+
 SRC = pathlib.Path("/home/jovyan/work/pack_out")
 DST = pathlib.Path("/home/jovyan/submission")
 NEED = ("code.ipynb", "model.pth", "submission.csv")
@@ -20,7 +23,13 @@ def main():
     for n in NEED:
         shutil.copy2(SRC / n, DST / n)
         print("copy", n, (DST / n).stat().st_size)
-    p = subprocess.run(["python", "/home/jovyan/work/bugcheck.py"], cwd="/home/jovyan")
+    # C6 의 기준 스냅샷. 여기서 안 갱신하면 옛 카드와 비교해 항상 FAIL 이다 (E021 판이 8/18 부터 남아 있었다).
+    ref = pathlib.Path("/home/jovyan/work/preds/test_submitted.npy")
+    sub = pd.read_csv(DST / "submission.csv")
+    np.save(ref, sub[[f"target_{i:02d}" for i in range(12)]].to_numpy(np.float64))
+    print("ref", ref, sub.shape)
+
+    p = subprocess.run(["python", "/home/jovyan/work/bugcheck.py", "--repro"], cwd="/home/jovyan")
     sys.exit(p.returncode)
 
 
