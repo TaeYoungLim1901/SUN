@@ -127,6 +127,44 @@ def build_cache(split, inputs, px=PX, cache=None):
     return {v: i for i, v in enumerate(names)}, a
 
 
+def flow_pairs(split, inputs, idx, arr, px):
+    """연속 프레임쌍 Farneback 광류. 파라미터는 work/cnn6.py flow_pairs 와 같다."""
+    import cv2
+    cache = cache_for(px)
+    path = cache / f"flowfield_{px}px.npy"
+    kpath = cache / f"flowfield_{px}px_keys.txt"
+    tab, nl = chr(9), chr(10)
+
+    def keylines(keys, with_nl=False):
+        return [a + tab + b + (nl if with_nl else "") for a, b in keys]
+
+    names = inputs[IMG].to_numpy()
+    seen = {}
+    for row in names:
+        for t in range(19):
+            seen.setdefault((row[t], row[t + 1]), len(seen))
+    keys = list(seen)
+    if path.exists() and kpath.exists() and (
+            kpath.read_text(encoding="utf-8").splitlines() == keylines(keys)):
+        return seen, np.load(path, mmap_mode="r")
+    if path.exists():
+        path.unlink()
+    out = np.lib.format.open_memmap(path, mode="w+", dtype=np.float16,
+                                    shape=(len(keys), 2, px, px))
+    t0 = time.perf_counter()
+    for i, (na, nb) in enumerate(keys):
+        a = np.asarray(arr[idx[na], 0], np.uint8)      # 193 채널, 정규화 전 uint8
+        b = np.asarray(arr[idx[nb], 0], np.uint8)
+        f = cv2.calcOpticalFlowFarneback(a, b, None, 0.5, 3, 11, 3, 5, 1.2, 0)
+        out[i, 0] = f[..., 0].astype(np.float16)
+        out[i, 1] = f[..., 1].astype(np.float16)
+        if (i + 1) % 2000 == 0:
+            print(f"  {split} flow {i+1}/{len(keys)} ({time.perf_counter()-t0:.0f}s)", flush=True)
+    out.flush()
+    kpath.write_text("".join(keylines(keys, True)), encoding="utf-8")
+    return seen, np.load(path, mmap_mode="r")
+
+
 # %% [markdown]
 # ## 2. 이미지 → 스칼라 피처
 #
@@ -464,6 +502,44 @@ class NetV4(nn.Module):
         return self.head(torch.cat([g, self.wind(wind)], dim=-1))
 
 
+class EncoderV6(nn.Module):
+    """2-스트림(영상 2ch + 광류 2ch). work/cnn6.py Encoder 와 레이어·이름이 같다."""
+
+    def __init__(self, dim=192, wm=1.0):
+        super().__init__()
+        c1, c2, c3, c4 = (int(32 * wm), int(64 * wm), int(128 * wm), int(256 * wm))
+
+        def blk(i, o, s=2):
+            return nn.Sequential(
+                nn.Conv2d(i, o, 3, s, 1, bias=False), nn.BatchNorm2d(o), nn.SiLU(inplace=True),
+                nn.Conv2d(o, o, 3, 1, 1, bias=False), nn.BatchNorm2d(o), nn.SiLU(inplace=True))
+
+        self.net = nn.Sequential(blk(4, c1), blk(c1, c2), blk(c2, c3), blk(c3, c4),
+                                 nn.AdaptiveAvgPool2d(1), nn.Flatten(), nn.Dropout(0.2),
+                                 nn.Linear(c4, dim))
+
+    def forward(self, x):
+        return self.net(x.contiguous(memory_format=torch.channels_last))
+
+
+class NetV6(nn.Module):
+    def __init__(self, dim=192, hid=224, wm=1.0):
+        super().__init__()
+        self.enc = EncoderV6(dim, wm)
+        self.hid = hid
+        self.gru = nn.GRU(dim, hid, num_layers=1, batch_first=True, bidirectional=True)
+        self.wind = nn.Sequential(nn.Linear(40, 128), nn.SiLU(inplace=True), nn.Linear(128, 128))
+        self.head = nn.Sequential(nn.Linear(4 * hid + 128, 256), nn.SiLU(inplace=True),
+                                  nn.Dropout(0.25), nn.Linear(256, 12))
+
+    def forward(self, img, wind):
+        b, t = img.shape[:2]
+        e = self.enc(img.flatten(0, 1)).view(b, t, -1)
+        g, _ = self.gru(e)
+        g = torch.cat([g[:, -1], g.mean(1)], dim=-1)
+        return self.head(torch.cat([g, self.wind(wind)], dim=-1))
+
+
 def wind_cnn(inputs):
     w = inputs[W].to_numpy(np.float32)
     d = np.diff(w, axis=1, prepend=w[:, :1])
@@ -483,15 +559,24 @@ def disk_mask(px, dev):
 
 
 def cnn_predict(state, inputs, split, mean, std, arch="v1", px=PX96, norm="z", wm=1.0,
-                pool="g6"):
+                pool="g6", fstd=1.0):
     idx, arr = build_cache(split, inputs, px, cache_for(px))
     slots = np.stack([[idx[v] for v in inputs[col]] for col in IMG], axis=1)
+    farr = pslots = None
+    if arch == "v6":
+        seen, farr = flow_pairs(split, inputs, idx, arr, px)
+        names = inputs[IMG].to_numpy()
+        pslots = np.stack([[seen[(row[t], row[t + 1])] for t in range(19)] for row in names])
+        slots = slots[:, 1:]                                          # 영상 t=1..19
+        assert slots.shape == pslots.shape == (len(inputs), 19)
     imgs = torch.from_numpy(np.asarray(arr)).to(DEV)
     slots = torch.from_numpy(slots).long().to(DEV)
     wf = torch.from_numpy(wind_cnn(inputs)).to(DEV)
     last = torch.from_numpy(inputs[W[-1]].to_numpy(np.float32)).to(DEV)
     if arch == "v4":
         model = NetV4(int(192 * wm), int(224 * wm), wm, pool)
+    elif arch == "v6":
+        model = NetV6(int(192 * wm), int(224 * wm), wm)
     elif arch == "v3":
         model = NetV3(int(192 * wm), int(224 * wm), wm)
     else:
@@ -501,6 +586,7 @@ def cnn_predict(state, inputs, split, mean, std, arch="v1", px=PX96, norm="z", w
     model.eval()
     if norm == "med" and px not in _DISK:
         _DISK[px] = disk_mask(px, DEV)
+    scale = float(fstd) if fstd else 1.0
     out = []
     for i in range(0, len(inputs), 96):
         rows = torch.arange(i, min(i + 96, len(inputs)), device=DEV)
@@ -510,8 +596,24 @@ def cnn_predict(state, inputs, split, mean, std, arch="v1", px=PX96, norm="z", w
             med = raw[..., _DISK[px]].median(-1).values[..., None, None]
             raw = raw / med.clamp(min=1.0)
         im = (raw - mean) / std
+        if arch == "v6":
+            ii = rows.detach().cpu().numpy()
+            fl = torch.from_numpy(np.asarray(farr[pslots[ii]], np.float32)).to(DEV) / scale
+            im = torch.cat([im, fl], dim=2)                           # (b,19,4,PX,PX)
         with torch.no_grad():
-            if arch == "v3":
+            if arch == "v6":
+                fim = torch.flip(im, dims=[-2])
+                fim = torch.cat([fim[:, :, :3], -fim[:, :, 3:]], dim=2)   # fy 부호
+                if DEV.type == "cuda":
+                    with torch.amp.autocast("cuda", dtype=torch.bfloat16):
+                        out.append((model(im, wf[rows]).float()
+                                    + model(fim, wf[rows]).float()) / 2
+                                   + last[rows, None])
+                else:
+                    out.append((model(im, wf[rows]).float()
+                                + model(fim, wf[rows]).float()) / 2
+                               + last[rows, None])
+            elif arch == "v3":
                 if DEV.type == "cuda":
                     with torch.amp.autocast("cuda", dtype=torch.bfloat16):
                         out.append((model(im, wf[rows]).float()
@@ -631,11 +733,12 @@ def predict(split, inputs):
             mean, std = entry.get("mean", cnn["mean"]), entry.get("std", cnn["std"])
             norm, wm = entry.get("norm", "z"), float(entry.get("wm", 1.0))
             pool = entry.get("pool", "g6")
+            fstd = float(entry.get("fstd", 1.0))
         else:
             state, arch, px = entry, "v1", PX96
             mean, std = cnn["mean"], cnn["std"]
-            norm, wm, pool = "z", 1.0, "g6"
-        p = p + WEIGHTS[tag] * cnn_predict(state, inputs, split, mean, std, arch, px, norm, wm, pool)
+            norm, wm, pool, fstd = "z", 1.0, "g6", 1.0
+        p = p + WEIGHTS[tag] * cnn_predict(state, inputs, split, mean, std, arch, px, norm, wm, pool, fstd)
     return np.clip(p, *CLIP)
 
 

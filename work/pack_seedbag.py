@@ -64,7 +64,8 @@ def main():
             state = {k: (v.half() if v.is_floating_point() else v) for k, v in state.items()}
         mean, std = MED_STATS if m["norm"] == "med" else Z_STATS[m["px"]]
         cnn[tag] = {"state": state, "arch": m.get("arch", "v3"), "px": m["px"], "norm": m["norm"],
-                    "wm": float(m.get("wm", 1.0)), "mean": mean, "std": std}
+                    "wm": float(m.get("wm", 1.0)), "mean": mean, "std": std,
+                    "fstd": float(m.get("fstd", 1.0))}
 
     new = dict(blob)
     if not a.no_omni:
