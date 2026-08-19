@@ -409,22 +409,29 @@ class EncoderV4(nn.Module):
 
     GRID = 6
     RED = 32
+    SHAPE = {"g6": (6, 6), "l8": (1, 8), "l28": (2, 8)}
 
-    def __init__(self, dim=192, wm=1.0):
+    def __init__(self, dim=192, wm=1.0, pool="g6"):
         super().__init__()
         c1, c2, c3, c4 = (int(32 * wm), int(64 * wm), int(128 * wm), int(256 * wm))
+        self.pool = pool
+        hh, ww = self.SHAPE[pool]
 
         def blk(i, o, s=2):
             return nn.Sequential(
                 nn.Conv2d(i, o, 3, s, 1, bias=False), nn.BatchNorm2d(o), nn.SiLU(inplace=True),
                 nn.Conv2d(o, o, 3, 1, 1, bias=False), nn.BatchNorm2d(o), nn.SiLU(inplace=True))
 
-        red = int(self.RED * wm)
-        self.net = nn.Sequential(blk(4, c1), blk(c1, c2), blk(c2, c3), blk(c3, c4),
-                                 nn.AdaptiveAvgPool2d(self.GRID),
-                                 nn.Conv2d(c4, red, 1, bias=False), nn.BatchNorm2d(red),
-                                 nn.SiLU(inplace=True), nn.Flatten(), nn.Dropout(0.2),
-                                 nn.Linear(red * self.GRID * self.GRID, dim))
+        body = [blk(4, c1), blk(c1, c2), blk(c2, c3), blk(c3, c4), nn.AdaptiveAvgPool2d((hh, ww))]
+        if pool == "g6":
+            # 6×6 은 셀이 36개라 1×1 로 채널을 줄여야 파라미터가 안 터진다
+            red = int(self.RED * wm)
+            body += [nn.Conv2d(c4, red, 1, bias=False), nn.BatchNorm2d(red), nn.SiLU(inplace=True)]
+            flat = red * hh * ww
+        else:
+            flat = c4 * hh * ww
+        body += [nn.Flatten(), nn.Dropout(0.2), nn.Linear(flat, dim)]
+        self.net = nn.Sequential(*body)
         self._coord = None
 
     def coords(self, x):
@@ -441,9 +448,9 @@ class EncoderV4(nn.Module):
 
 
 class NetV4(nn.Module):
-    def __init__(self, dim=192, hid=224, wm=1.0):
+    def __init__(self, dim=192, hid=224, wm=1.0, pool="g6"):
         super().__init__()
-        self.enc = EncoderV4(dim, wm)
+        self.enc = EncoderV4(dim, wm, pool)
         self.gru = nn.GRU(dim, hid, num_layers=1, batch_first=True, bidirectional=True)
         self.wind = nn.Sequential(nn.Linear(40, 128), nn.SiLU(inplace=True), nn.Linear(128, 128))
         self.head = nn.Sequential(nn.Linear(4 * hid + 128, 256), nn.SiLU(inplace=True),
@@ -475,7 +482,8 @@ def disk_mask(px, dev):
     return ((yy - px / 2 + 0.5) ** 2 + (xx - px / 2 + 0.5) ** 2) <= (0.47 * px) ** 2
 
 
-def cnn_predict(state, inputs, split, mean, std, arch="v1", px=PX96, norm="z", wm=1.0):
+def cnn_predict(state, inputs, split, mean, std, arch="v1", px=PX96, norm="z", wm=1.0,
+                pool="g6"):
     idx, arr = build_cache(split, inputs, px, cache_for(px))
     slots = np.stack([[idx[v] for v in inputs[col]] for col in IMG], axis=1)
     imgs = torch.from_numpy(np.asarray(arr)).to(DEV)
@@ -483,7 +491,7 @@ def cnn_predict(state, inputs, split, mean, std, arch="v1", px=PX96, norm="z", w
     wf = torch.from_numpy(wind_cnn(inputs)).to(DEV)
     last = torch.from_numpy(inputs[W[-1]].to_numpy(np.float32)).to(DEV)
     if arch == "v4":
-        model = NetV4(int(192 * wm), int(224 * wm), wm)
+        model = NetV4(int(192 * wm), int(224 * wm), wm, pool)
     elif arch == "v3":
         model = NetV3(int(192 * wm), int(224 * wm), wm)
     else:
@@ -622,11 +630,12 @@ def predict(split, inputs):
             state, arch, px = entry["state"], entry.get("arch", "v1"), entry.get("px", PX96)
             mean, std = entry.get("mean", cnn["mean"]), entry.get("std", cnn["std"])
             norm, wm = entry.get("norm", "z"), float(entry.get("wm", 1.0))
+            pool = entry.get("pool", "g6")
         else:
             state, arch, px = entry, "v1", PX96
             mean, std = cnn["mean"], cnn["std"]
-            norm, wm = "z", 1.0
-        p = p + WEIGHTS[tag] * cnn_predict(state, inputs, split, mean, std, arch, px, norm, wm)
+            norm, wm, pool = "z", 1.0, "g6"
+        p = p + WEIGHTS[tag] * cnn_predict(state, inputs, split, mean, std, arch, px, norm, wm, pool)
     return np.clip(p, *CLIP)
 
 

@@ -31,6 +31,7 @@ EPOCHS = int(sys.argv[4]) if len(sys.argv) > 4 else 40
 HSS_W = float(sys.argv[5]) if len(sys.argv) > 5 else 1.0  # y>600 셀 가중. 1 이면 기존과 동일
 LAST = int(sys.argv[6]) if len(sys.argv) > 6 else 20     # 최근 N 프레임만. 20 이면 기존과 동일
 NORM = sys.argv[7] if len(sys.argv) > 7 else "z"         # z=전역 zscore · med=이미지 disk-median
+POOL = sys.argv[9] if len(sys.argv) > 9 else "g6"        # g6=6x6 · l8=(1,8) 경도만 · l28=(2,8)
 WM = float(sys.argv[8]) if len(sys.argv) > 8 else 1.0    # 폭 배수. 1 이면 기존 아키텍처 그대로
 IMG = [f"image_{i:02d}" for i in range(20)]
 W = [f"wind_{i:02d}" for i in range(20)]
@@ -85,23 +86,30 @@ class Encoder(nn.Module):
     """
 
     GRID = 6
-    RED = 32                       # 6×6 을 남기니 채널은 줄여야 파라미터가 안 터진다
+    RED = 32
+    SHAPE = {"g6": (6, 6), "l8": (1, 8), "l28": (2, 8)}
 
-    def __init__(self, dim=192, wm=1.0):
+    def __init__(self, dim=192, wm=1.0, pool="g6"):
         super().__init__()
         c1, c2, c3, c4 = (int(32 * wm), int(64 * wm), int(128 * wm), int(256 * wm))
+        self.pool = pool
+        hh, ww = self.SHAPE[pool]
 
         def blk(i, o, s=2):
             return nn.Sequential(
                 nn.Conv2d(i, o, 3, s, 1, bias=False), nn.BatchNorm2d(o), nn.SiLU(inplace=True),
                 nn.Conv2d(o, o, 3, 1, 1, bias=False), nn.BatchNorm2d(o), nn.SiLU(inplace=True))
 
-        red = int(self.RED * wm)
-        self.net = nn.Sequential(blk(4, c1), blk(c1, c2), blk(c2, c3), blk(c3, c4),
-                                 nn.AdaptiveAvgPool2d(self.GRID),
-                                 nn.Conv2d(c4, red, 1, bias=False), nn.BatchNorm2d(red),
-                                 nn.SiLU(inplace=True), nn.Flatten(), nn.Dropout(0.2),
-                                 nn.Linear(red * self.GRID * self.GRID, dim))
+        body = [blk(4, c1), blk(c1, c2), blk(c2, c3), blk(c3, c4), nn.AdaptiveAvgPool2d((hh, ww))]
+        if pool == "g6":
+            # 6×6 은 셀이 36개라 1×1 로 채널을 줄여야 파라미터가 안 터진다
+            red = int(self.RED * wm)
+            body += [nn.Conv2d(c4, red, 1, bias=False), nn.BatchNorm2d(red), nn.SiLU(inplace=True)]
+            flat = red * hh * ww
+        else:
+            flat = c4 * hh * ww
+        body += [nn.Flatten(), nn.Dropout(0.2), nn.Linear(flat, dim)]
+        self.net = nn.Sequential(*body)
         self._coord = None
 
     def coords(self, x):
@@ -118,9 +126,9 @@ class Encoder(nn.Module):
 
 
 class Net(nn.Module):
-    def __init__(self, dim=192, hid=224, wm=1.0):
+    def __init__(self, dim=192, hid=224, wm=1.0, pool="g6"):
         super().__init__()
-        self.enc = Encoder(dim, wm)
+        self.enc = Encoder(dim, wm, pool)
         self.hid = hid
         self.gru = nn.GRU(dim, hid, num_layers=1, batch_first=True, bidirectional=True)
         self.wind = nn.Sequential(nn.Linear(40, 128), nn.SiLU(inplace=True), nn.Linear(128, 128))
@@ -165,7 +173,7 @@ if NORM == "med":
         a = a / med.clamp(min=1.0)
         data[s] = (a.to(memory_format=torch.channels_last), slots)
     mean, std = 1.0, 0.35
-print(f"{PX}px cache ready · pixel mean={mean:.1f} std={std:.1f} last={LAST} norm={NORM}", flush=True)
+print(f"pool={POOL} · {PX}px cache ready · pixel mean={mean:.1f} std={std:.1f} last={LAST} norm={NORM}", flush=True)
 
 wf = {s: torch.from_numpy(wind_feats(x)).to(DEV)
       for s, x in (("train", tr_x), ("validation", va_x), ("test", te_x))}
@@ -173,7 +181,7 @@ last = {s: torch.from_numpy(x[W[-1]].to_numpy(np.float32)).to(DEV)
         for s, x in (("train", tr_x), ("validation", va_x), ("test", te_x))}
 ytr = torch.from_numpy(tr_y).to(DEV)
 
-model = Net(int(192 * WM), int(224 * WM), WM).to(DEV).to(memory_format=torch.channels_last)
+model = Net(int(192 * WM), int(224 * WM), WM, POOL).to(DEV).to(memory_format=torch.channels_last)
 print("params", sum(p.numel() for p in model.parameters()), "hss_w", HSS_W, flush=True)
 opt = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0.05)
 BS = 32
@@ -188,7 +196,8 @@ def batch(split, rows, train=False):
         if torch.rand(1).item() < 0.5:
             im = torch.flip(im, dims=[-2])              # 남북 반전만. 동서 반전은 자전 방향을 뒤집는다
         # 평행이동 지터: 태양 디스크 중심이 늘 같은 화소에 있으면 인코더가 위치를 외운다
-        sy, sx = (int(torch.randint(-6, 7, (1,))), int(torch.randint(-6, 7, (1,))))
+        # 위치인지 망에서 roll 은 림을 반대편으로 감는다 — 지터를 ±2 로 (팀원 NEXT §7.5)
+        sy, sx = (int(torch.randint(-2, 3, (1,))), int(torch.randint(-2, 3, (1,))))
         im = torch.roll(im, shifts=(sy, sx), dims=(-2, -1))
         # 밝기/대비 지터: 노출 차이에 둔감해지게. 코로나홀은 상대적으로 어두운 영역이다.
         im = im * (1 + 0.12 * torch.randn(len(rows), 1, 1, 1, 1, device=im.device))              + 0.12 * torch.randn(len(rows), 1, 1, 1, 1, device=im.device)
