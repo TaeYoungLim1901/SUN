@@ -33,7 +33,7 @@ python tools/push.py --sync                 # 팀원 작업 받아 main 에 합�
 ```
 
 **`shared` 브랜치에서 `git add -A` 금지.** 개인 파일이 팀 레포로 샌다. 공개는 `--share` 로만.
-팀에 안 가는 것: 이 문단 아래 전부, `ARENA.md`, `GROK_REVIEW.md`,
+팀에 안 가는 것: 이 문단 아래 전부, `ARENA.md`, `GROK_REVIEW.md`, `SEARCH.md`,
 `tools/push.py`, `tools/{data_probe,omni_fill,make_submission}.py`.
 
 ## 「작업 시작」

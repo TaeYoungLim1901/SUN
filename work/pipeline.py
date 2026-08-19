@@ -81,6 +81,7 @@ def resolve_cache(px):
 CACHE = resolve_cache(PX)
 CACHE96 = resolve_cache(PX96)
 _CACHES = {PX: CACHE, PX96: CACHE96}
+_DISK = {}   # med 정규화용 원판 마스크, 해상도별
 
 
 def cache_for(px):
@@ -369,26 +370,80 @@ class Net(nn.Module):
 
 
 class EncoderV3(nn.Module):
-    def __init__(self, dim=192):
+    def __init__(self, dim=192, wm=1.0):
         super().__init__()
+        c1, c2, c3, c4 = (int(32 * wm), int(64 * wm), int(128 * wm), int(256 * wm))
 
         def blk(i, o, s=2):
             return nn.Sequential(
                 nn.Conv2d(i, o, 3, s, 1, bias=False), nn.BatchNorm2d(o), nn.SiLU(inplace=True),
                 nn.Conv2d(o, o, 3, 1, 1, bias=False), nn.BatchNorm2d(o), nn.SiLU(inplace=True))
 
-        self.net = nn.Sequential(blk(2, 32), blk(32, 64), blk(64, 128), blk(128, 256),
+        self.net = nn.Sequential(blk(2, c1), blk(c1, c2), blk(c2, c3), blk(c3, c4),
                                  nn.AdaptiveAvgPool2d(1), nn.Flatten(), nn.Dropout(0.2),
-                                 nn.Linear(256, dim))
+                                 nn.Linear(c4, dim))
 
     def forward(self, x):
         return self.net(x.contiguous(memory_format=torch.channels_last))
 
 
 class NetV3(nn.Module):
-    def __init__(self, dim=192, hid=224):
+    def __init__(self, dim=192, hid=224, wm=1.0):
         super().__init__()
-        self.enc = EncoderV3(dim)
+        self.enc = EncoderV3(dim, wm)
+        self.gru = nn.GRU(dim, hid, num_layers=1, batch_first=True, bidirectional=True)
+        self.wind = nn.Sequential(nn.Linear(40, 128), nn.SiLU(inplace=True), nn.Linear(128, 128))
+        self.head = nn.Sequential(nn.Linear(4 * hid + 128, 256), nn.SiLU(inplace=True),
+                                  nn.Dropout(0.25), nn.Linear(256, 12))
+
+    def forward(self, img, wind):
+        b, t = img.shape[:2]
+        e = self.enc(img.flatten(0, 1)).view(b, t, -1)
+        g, _ = self.gru(e)
+        g = torch.cat([g[:, -1], g.mean(1)], dim=-1)
+        return self.head(torch.cat([g, self.wind(wind)], dim=-1))
+
+
+class EncoderV4(nn.Module):
+    """GAP 제거판 (`work/cnn4.py` Encoder 와 레이어·이름이 같아야 state_dict 가 맞는다)."""
+
+    GRID = 6
+    RED = 32
+
+    def __init__(self, dim=192, wm=1.0):
+        super().__init__()
+        c1, c2, c3, c4 = (int(32 * wm), int(64 * wm), int(128 * wm), int(256 * wm))
+
+        def blk(i, o, s=2):
+            return nn.Sequential(
+                nn.Conv2d(i, o, 3, s, 1, bias=False), nn.BatchNorm2d(o), nn.SiLU(inplace=True),
+                nn.Conv2d(o, o, 3, 1, 1, bias=False), nn.BatchNorm2d(o), nn.SiLU(inplace=True))
+
+        red = int(self.RED * wm)
+        self.net = nn.Sequential(blk(4, c1), blk(c1, c2), blk(c2, c3), blk(c3, c4),
+                                 nn.AdaptiveAvgPool2d(self.GRID),
+                                 nn.Conv2d(c4, red, 1, bias=False), nn.BatchNorm2d(red),
+                                 nn.SiLU(inplace=True), nn.Flatten(), nn.Dropout(0.2),
+                                 nn.Linear(red * self.GRID * self.GRID, dim))
+        self._coord = None
+
+    def coords(self, x):
+        if self._coord is None or self._coord.shape[-1] != x.shape[-1]:
+            px = x.shape[-1]
+            g = torch.linspace(-1, 1, px, device=x.device, dtype=x.dtype)
+            yy, xx = torch.meshgrid(g, g, indexing="ij")
+            self._coord = torch.stack([xx, yy])[None]
+        return self._coord.expand(x.shape[0], -1, -1, -1)
+
+    def forward(self, x):
+        x = torch.cat([x, self.coords(x).to(x.dtype)], dim=1)
+        return self.net(x.contiguous(memory_format=torch.channels_last))
+
+
+class NetV4(nn.Module):
+    def __init__(self, dim=192, hid=224, wm=1.0):
+        super().__init__()
+        self.enc = EncoderV4(dim, wm)
         self.gru = nn.GRU(dim, hid, num_layers=1, batch_first=True, bidirectional=True)
         self.wind = nn.Sequential(nn.Linear(40, 128), nn.SiLU(inplace=True), nn.Linear(128, 128))
         self.head = nn.Sequential(nn.Linear(4 * hid + 128, 256), nn.SiLU(inplace=True),
@@ -414,21 +469,39 @@ def bag_predict(entry, X):
     return np.mean([m.predict(X) for m in ms], axis=0)
 
 
-def cnn_predict(state, inputs, split, mean, std, arch="v1", px=PX96):
+def disk_mask(px, dev):
+    """cnn3.py 의 med 정규화와 같은 원판 마스크 (중심 반지름 0.47·px)."""
+    yy, xx = torch.meshgrid(torch.arange(px, device=dev), torch.arange(px, device=dev), indexing="ij")
+    return ((yy - px / 2 + 0.5) ** 2 + (xx - px / 2 + 0.5) ** 2) <= (0.47 * px) ** 2
+
+
+def cnn_predict(state, inputs, split, mean, std, arch="v1", px=PX96, norm="z", wm=1.0):
     idx, arr = build_cache(split, inputs, px, cache_for(px))
     slots = np.stack([[idx[v] for v in inputs[col]] for col in IMG], axis=1)
     imgs = torch.from_numpy(np.asarray(arr)).to(DEV)
     slots = torch.from_numpy(slots).long().to(DEV)
     wf = torch.from_numpy(wind_cnn(inputs)).to(DEV)
     last = torch.from_numpy(inputs[W[-1]].to_numpy(np.float32)).to(DEV)
-    model_cls = NetV3 if arch == "v3" else Net
-    model = model_cls().to(DEV).to(memory_format=torch.channels_last)
+    if arch == "v4":
+        model = NetV4(int(192 * wm), int(224 * wm), wm)
+    elif arch == "v3":
+        model = NetV3(int(192 * wm), int(224 * wm), wm)
+    else:
+        model = Net()
+    model = model.to(DEV).to(memory_format=torch.channels_last)
     model.load_state_dict(state)
     model.eval()
+    if norm == "med" and px not in _DISK:
+        _DISK[px] = disk_mask(px, DEV)
     out = []
     for i in range(0, len(inputs), 96):
         rows = torch.arange(i, min(i + 96, len(inputs)), device=DEV)
-        im = (imgs[slots[rows]].float() - mean) / std
+        raw = imgs[slots[rows]].float()
+        if norm == "med":
+            # 절대 밝기 confound 를 이미지별 disk-median 으로 나눈다 (cnn3.py NORM=med 와 동일)
+            med = raw[..., _DISK[px]].median(-1).values[..., None, None]
+            raw = raw / med.clamp(min=1.0)
+        im = (raw - mean) / std
         with torch.no_grad():
             if arch == "v3":
                 if DEV.type == "cuda":
@@ -548,10 +621,12 @@ def predict(split, inputs):
         if isinstance(entry, dict) and "state" in entry:
             state, arch, px = entry["state"], entry.get("arch", "v1"), entry.get("px", PX96)
             mean, std = entry.get("mean", cnn["mean"]), entry.get("std", cnn["std"])
+            norm, wm = entry.get("norm", "z"), float(entry.get("wm", 1.0))
         else:
             state, arch, px = entry, "v1", PX96
             mean, std = cnn["mean"], cnn["std"]
-        p = p + WEIGHTS[tag] * cnn_predict(state, inputs, split, mean, std, arch, px)
+            norm, wm = "z", 1.0
+        p = p + WEIGHTS[tag] * cnn_predict(state, inputs, split, mean, std, arch, px, norm, wm)
     return np.clip(p, *CLIP)
 
 
