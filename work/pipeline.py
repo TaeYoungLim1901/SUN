@@ -45,8 +45,10 @@ NGLOBAL_V2 = 2 * (4 + len(DARK_V2))
 V_HYP = (300.0, 350.0, 400.0, 450.0, 500.0, 600.0, 700.0)
 REL = (0.35, 0.45, 0.55, 0.70)
 # 결합 가중치. kit.hill_climb 이 validation 원성분 6개에서 고른 값.
-WEIGHTS = {"ridge_v1": 0.125, "gbdt_v1": 0.25, "gbdt_v2": 0.125,
-           "eswf": 0.25, "cnn96b": 0.125, "cnn96w3": 0.125}
+WEIGHTS = {"ridge_v1": 0.10, "gbdt_v1": 0.23, "gbdt_v2": 0.12,
+           "eswf": 0.25, "cnn3a": 0.15, "cnn3b": 0.15}
+OLD_WEIGHTS = {"ridge_v1": 0.125, "gbdt_v1": 0.25, "gbdt_v2": 0.125,
+               "eswf": 0.25, "cnn96b": 0.125, "cnn96w3": 0.125}
 DEV = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
@@ -78,6 +80,14 @@ def resolve_cache(px):
 
 CACHE = resolve_cache(PX)
 CACHE96 = resolve_cache(PX96)
+_CACHES = {PX: CACHE, PX96: CACHE96}
+
+
+def cache_for(px):
+    """CNN 태그가 96 이 아닌 해상도를 쓸 수 있다 (cnn3c = 128px)."""
+    if px not in _CACHES:
+        _CACHES[px] = resolve_cache(px)
+    return _CACHES[px]
 IMG = [f"image_{i:02d}" for i in range(20)]
 W = [f"wind_{i:02d}" for i in range(20)]
 T = [f"target_{i:02d}" for i in range(12)]
@@ -358,20 +368,61 @@ class Net(nn.Module):
         return self.head(torch.cat([g, self.wind(wind)], dim=-1))
 
 
+class EncoderV3(nn.Module):
+    def __init__(self, dim=192):
+        super().__init__()
+
+        def blk(i, o, s=2):
+            return nn.Sequential(
+                nn.Conv2d(i, o, 3, s, 1, bias=False), nn.BatchNorm2d(o), nn.SiLU(inplace=True),
+                nn.Conv2d(o, o, 3, 1, 1, bias=False), nn.BatchNorm2d(o), nn.SiLU(inplace=True))
+
+        self.net = nn.Sequential(blk(2, 32), blk(32, 64), blk(64, 128), blk(128, 256),
+                                 nn.AdaptiveAvgPool2d(1), nn.Flatten(), nn.Dropout(0.2),
+                                 nn.Linear(256, dim))
+
+    def forward(self, x):
+        return self.net(x.contiguous(memory_format=torch.channels_last))
+
+
+class NetV3(nn.Module):
+    def __init__(self, dim=192, hid=224):
+        super().__init__()
+        self.enc = EncoderV3(dim)
+        self.gru = nn.GRU(dim, hid, num_layers=1, batch_first=True, bidirectional=True)
+        self.wind = nn.Sequential(nn.Linear(40, 128), nn.SiLU(inplace=True), nn.Linear(128, 128))
+        self.head = nn.Sequential(nn.Linear(4 * hid + 128, 256), nn.SiLU(inplace=True),
+                                  nn.Dropout(0.25), nn.Linear(256, 12))
+
+    def forward(self, img, wind):
+        b, t = img.shape[:2]
+        e = self.enc(img.flatten(0, 1)).view(b, t, -1)
+        g, _ = self.gru(e)
+        g = torch.cat([g[:, -1], g.mean(1)], dim=-1)
+        return self.head(torch.cat([g, self.wind(wind)], dim=-1))
+
+
 def wind_cnn(inputs):
     w = inputs[W].to_numpy(np.float32)
     d = np.diff(w, axis=1, prepend=w[:, :1])
     return np.concatenate([(w - 400.0) / 100.0, d / 50.0], axis=1)
 
 
-def cnn_predict(state, inputs, split, mean, std):
-    idx, arr = build_cache(split, inputs, PX96, CACHE96)
+def bag_predict(entry, X):
+    """horizon 슬롯이 모델 리스트면 시드백이라 평균낸다 (omnibag·eswfbag). 단일 모델은 그대로."""
+    ms = entry if isinstance(entry, (list, tuple)) else [entry]
+    return np.mean([m.predict(X) for m in ms], axis=0)
+
+
+def cnn_predict(state, inputs, split, mean, std, arch="v1", px=PX96):
+    idx, arr = build_cache(split, inputs, px, cache_for(px))
     slots = np.stack([[idx[v] for v in inputs[col]] for col in IMG], axis=1)
     imgs = torch.from_numpy(np.asarray(arr)).to(DEV)
     slots = torch.from_numpy(slots).long().to(DEV)
     wf = torch.from_numpy(wind_cnn(inputs)).to(DEV)
     last = torch.from_numpy(inputs[W[-1]].to_numpy(np.float32)).to(DEV)
-    model = Net().to(DEV).to(memory_format=torch.channels_last)
+    model_cls = NetV3 if arch == "v3" else Net
+    model = model_cls().to(DEV).to(memory_format=torch.channels_last)
     model.load_state_dict(state)
     model.eval()
     out = []
@@ -379,7 +430,17 @@ def cnn_predict(state, inputs, split, mean, std):
         rows = torch.arange(i, min(i + 96, len(inputs)), device=DEV)
         im = (imgs[slots[rows]].float() - mean) / std
         with torch.no_grad():
-            if DEV.type == "cuda":
+            if arch == "v3":
+                if DEV.type == "cuda":
+                    with torch.amp.autocast("cuda", dtype=torch.bfloat16):
+                        out.append((model(im, wf[rows]).float()
+                                    + model(torch.flip(im, dims=[-2]), wf[rows]).float()) / 2
+                                   + last[rows, None])
+                else:
+                    out.append((model(im, wf[rows]).float()
+                                + model(torch.flip(im, dims=[-2]), wf[rows]).float()) / 2
+                               + last[rows, None])
+            elif DEV.type == "cuda":
                 with torch.amp.autocast("cuda", dtype=torch.bfloat16):
                     out.append(model(im, wf[rows]).float() + last[rows, None])
             else:
@@ -451,8 +512,16 @@ assert len(blob["gbdt_v1"]) == 12 and len(blob["gbdt_eswf"]) == 12
 CLIP = blob.get("clip", CLIP)
 # pack.py 는 img_ridge/img_gbdt/v2_gbdt 키를 쓰기도 한다.
 _w = dict(blob.get("weights") or WEIGHTS)
-_alias = {"ridge_v1": "img_ridge", "gbdt_v1": "img_gbdt", "gbdt_v2": "v2_gbdt"}
-WEIGHTS = {k: float(_w.get(k, _w.get(_alias.get(k, k), WEIGHTS[k]))) for k in WEIGHTS}
+_alias = {"img_ridge": "ridge_v1", "img_gbdt": "gbdt_v1", "v2_gbdt": "gbdt_v2",
+          "omni": "gbdt_v2", "omnibag": "gbdt_v2"}
+WEIGHTS = {_alias.get(k, k): float(v) for k, v in _w.items()}
+CNN_TAGS = tuple(k for k in WEIGHTS if k.startswith("cnn"))
+if not CNN_TAGS:
+    CNN_TAGS = ("cnn96b", "cnn96w3")
+    WEIGHTS = {**OLD_WEIGHTS, **WEIGHTS}
+for _k in ("ridge_v1", "gbdt_v1", "gbdt_v2", "eswf"):
+    assert _k in WEIGHTS, f"weights 에 {_k} 없음: {sorted(WEIGHTS)}"
+assert all(t in blob["cnn"] for t in CNN_TAGS), (CNN_TAGS, sorted(blob["cnn"]))
 
 
 def predict(split, inputs):
@@ -462,19 +531,27 @@ def predict(split, inputs):
     w = inputs[W].to_numpy(np.float64)
     seq = eswf_seq(split, inputs)
     pe = np.column_stack([
-        blob["gbdt_eswf"][h].predict(eswf_feats(seq, inputs, 6.0 * (h + 1)))
+        bag_predict(blob["gbdt_eswf"][h], eswf_feats(seq, inputs, 6.0 * (h + 1)))
         for h in range(12)])
     # gbdt_v2 슬롯 = omni (t−4d + j* + 잔차)
     pj = last + np.column_stack([
-        blob["gbdt_v2"][h].predict(np.column_stack([f2, t4_block(aseq, h), align_block(aseq, w, h)]))
+        bag_predict(blob["gbdt_v2"][h],
+                    np.column_stack([f2, t4_block(aseq, h), align_block(aseq, w, h)]))
         for h in range(12)])
     p = (WEIGHTS["ridge_v1"] * blob["ridge_v1"].predict(f1)
-         + WEIGHTS["gbdt_v1"] * np.column_stack([m.predict(f1) for m in blob["gbdt_v1"]])
+         + WEIGHTS["gbdt_v1"] * np.column_stack([bag_predict(m, f1) for m in blob["gbdt_v1"]])
          + WEIGHTS["gbdt_v2"] * pj
          + WEIGHTS["eswf"] * pe)
     cnn = blob["cnn"]
-    for tag in ("cnn96b", "cnn96w3"):
-        p = p + WEIGHTS[tag] * cnn_predict(cnn[tag], inputs, split, cnn["mean"], cnn["std"])
+    for tag in CNN_TAGS:
+        entry = cnn[tag]
+        if isinstance(entry, dict) and "state" in entry:
+            state, arch, px = entry["state"], entry.get("arch", "v1"), entry.get("px", PX96)
+            mean, std = entry.get("mean", cnn["mean"]), entry.get("std", cnn["std"])
+        else:
+            state, arch, px = entry, "v1", PX96
+            mean, std = cnn["mean"], cnn["std"]
+        p = p + WEIGHTS[tag] * cnn_predict(state, inputs, split, mean, std, arch, px)
     return np.clip(p, *CLIP)
 
 

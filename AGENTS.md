@@ -59,6 +59,8 @@ codex exec -m gpt-5.6-luna -c model_reasoning_effort="xhigh" --skip-git-repo-che
 
 첫 메시지에 「작업 시작」만 있어도 위 순서를 바로 한다. 확인 질문 하지 마라.
 
+8. 운영 규칙(위임·bug check·제출 슬롯·서버 한도)은 [`CHECKLIST.md`](CHECKLIST.md). 긴 작업·제출 전에 그 파일을 훑는다.
+
 ## 참고
 
 옛 중복본과 1차 출처 PDF 6편은 `D:\hackathon\SUN_old_backup\` 에 있다.

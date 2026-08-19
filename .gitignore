@@ -21,3 +21,5 @@ tools/*.log
 tools/url_candidates.json
 tools/urls.txt
 tools/urls_todo.txt
+# 팩 빌드 산출물 (서버가 원본, model.pth 74MB)
+work/pack_big/
