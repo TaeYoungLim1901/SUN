@@ -38,7 +38,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repro", action="store_true",
                     help="C6 재현 검사까지 돈다 (model.pth 로 test 재추론, 몇 분 걸린다)")
+    ap.add_argument("--dir", default=str(SUB), help="검사할 제출 폴더 (기본 /home/jovyan/submission)")
     a = ap.parse_args()
+    globals()["SUB"] = pathlib.Path(a.dir)
 
     print("C1 제출 파일")
     have = {p.name for p in SUB.glob("*")}
