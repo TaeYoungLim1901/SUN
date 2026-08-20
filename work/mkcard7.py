@@ -47,20 +47,35 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--tags", nargs="+", required=True)
     ap.add_argument("--base", default=str(BASECARD))
+    ap.add_argument("--b4", type=float, help="base4(ridge/gbdt/eswf) 그룹 총합. 주면 광류 몫은 1-b4-w")
     a = ap.parse_args()
 
     blob = torch.load(a.base, map_location="cpu", weights_only=False)
     stats = np.load(WORK / "v7_stats.npz")
     fstd = float(stats["fstd"])
     w_each = a.w / len(a.tags)
-    blob["weights"] = {k: float(v) * (1.0 - a.w) for k, v in blob["weights"].items()}
+    if a.b4 is None:
+        blob["weights"] = {k: float(v) * (1.0 - a.w) for k, v in blob["weights"].items()}
+    else:
+        # 그룹별 총합을 직접 지정한다 (base4 / 광류백 / 새 백). 구간별 전이 적합이 이 배치를 고른다.
+        old = {k: float(v) for k, v in blob["weights"].items()}
+        b4k = [k for k in old if not k.startswith("cnn")]
+        fk = [k for k in old if k.startswith("cnn")]
+        sb, sf = sum(old[k] for k in b4k), sum(old[k] for k in fk)
+        flow = 1.0 - a.b4 - a.w
+        assert flow > 0, flow
+        blob["weights"] = {**{k: old[k] / sb * a.b4 for k in b4k},
+                           **{k: old[k] / sf * flow for k in fk}}
     for t in a.tags:
         arch = "v7" if t.startswith("cnn7") else "v9"
+        # 태그마다 학습 설정이 다르다. z 정규화 시드를 med 로 담으면 조용히 다른 입력이 된다 (sol 검토 #9/#10).
+        norm = "z" if t.startswith("cnn7z") else "med"
+        mean, std = (MED if norm == "med" else (blob["cnn"]["mean"], blob["cnn"]["std"]))
         p = WORK / f"{t}.pth"
         assert p.exists(), f"{p} 없음"
         state = {k: v.half() for k, v in torch.load(p, map_location="cpu", weights_only=True).items()}
-        e = {"state": state, "arch": arch, "px": 96, "norm": "med", "wm": 0.7,
-             "mean": MED[0], "std": MED[1], "fstd": fstd}
+        e = {"state": state, "arch": arch, "px": 96, "norm": norm, "wm": 0.7,
+             "mean": mean, "std": std, "fstd": fstd}
         if arch == "v7":
             e["smu"], e["ssd"] = stats["smu"], stats["ssd"]
         blob["cnn"][t] = e
