@@ -99,5 +99,5 @@
 - **블록 CV 핵심 gap**: `block_folds`는 validation 블록과 앞뒤 `gap` 블록을 train에서 제외하며 현재 self-check의 train/validation 비중첩·인접 블록 제외 조건도 논리상 맞다. 단, 대회 test에는 절대 시각이 없어 제출 피처로 쓰지 않는다는 제한도 문서에 반영돼 있다.
 - **지속성 기저**: `persistence_last` 기본 출력은 12열이다. `persistence_27d`의 `idx+(h+1)-lag_steps` horizon offset과 범위 밖 NaN 처리는 분석용 균일 시계열이라는 전제에서는 맞고, 제출 불가 주석도 있다.
 - **힐클라이밍 본체**: 중복 선택으로 정수 가중 평균을 만드는 갱신식과 반환 가중치는 맞다. 잘못된 결과는 알고리즘 자체가 아니라 위에서 지적한 `score`·NaN 검증을 그대로 호출하는 데서 생긴다.
-- **규정 충돌 차단**: pretrained weight 금지, test 시계열 복원 금지, pseudo-labeling 회색지대, validation target의 최종 학습 사용, 외부 데이터 금지는 RULES와 SUN_PLAN의 핵심 실행 경로에서 대체로 일치했다. PLAYBOOK의 일반적인 pretrained 권고는 SUN_PLAN에서 명시적으로 제외돼 있어 별도 finding으로 잡지 않았다.
+- **규정 충돌 차단**: pretrained weight 금지, test 시계열 복원 금지, **pseudo-labeling 은 [공지] 「추정」으로 NO-GO**(회색 아님), validation target의 최종 학습 사용 금지, 외부 데이터 금지는 RULES와 SUN_PLAN의 핵심 실행 경로에서 일치한다. PLAYBOOK의 일반적인 pretrained 권고는 SUN_PLAN에서 명시적으로 제외돼 있어 별도 finding으로 잡지 않았다. **제출본 선택은 Public 최고 자동**(2026-08-21 사람 확인).
 - **도구 실행**: `factcheck.py --selftest`, `conform.py --selftest`는 통과했고 현재 `conform.py` 전체 스캔은 exit 0이었다. 다만 그 PASS가 놓치는 반례는 위 finding에서 별도로 재현했다. 현재 Python에는 NumPy가 없어 `python tools/kit.py`의 demo 자체는 실행하지 못했고, kit 검증은 코드 추적과 독립 산술 반례로 수행했다.
