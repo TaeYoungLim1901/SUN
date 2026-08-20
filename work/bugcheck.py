@@ -6,7 +6,8 @@
   C3 값 위생 — NaN·inf 없음, 물리 범위, 상수열 아님
   C4 code.ipynb 자기완결성 — 로컬 .py import 금지, model.pth 로드 존재, pretrained 호출 없음
   C5 규정 — validation targets 를 학습에 쓴 흔적이 학습 스크립트에 있는지 grep
-  C6 재현성 — model.pth 를 로드해 test 를 다시 추론하면 submission.csv 와 일치하는지
+  C6 일치성 — model.pth 가 로드되고, submission.csv 가 저장된 test 예측과 같은지
+     (**재추론이 아니다.** 빈 폴더 재현은 work/submissions/repro.sh 가 정본이다)
 
 사용: python work/bugcheck.py [--repro]
 """
@@ -116,7 +117,8 @@ def main():
                 d = float(np.max(np.abs(cur - np.load(ref))))
                 check("submission.csv = 저장된 test 예측", d < 1e-6, f"최대차 {d:.2e}")
             else:
-                print("  건너뜀: work/preds/test_submitted.npy 가 없다")
+                check("기준 test 예측(work/preds/test_submitted.npy) 존재", False,
+                      "없으면 C6 는 아무것도 검사하지 못한다 — 건너뛰지 않고 실패시킨다")
         except Exception as e:                       # noqa: BLE001
             check("model.pth 로드됨", False, repr(e)[:120])
 
