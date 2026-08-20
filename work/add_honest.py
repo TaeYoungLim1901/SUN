@@ -35,8 +35,14 @@ def group_folds(lab, rng, n_folds=2):
     return assign[lab]
 
 
+BASETAG = None
+
+
 def main():
+    global BASETAG
     tags = sys.argv[1:]
+    if len(tags) > 1 and tags[0] == "--base":       # 기준 블렌드를 npy 태그로 지정 (기본은 E039 성분합)
+        BASETAG, tags = tags[1], tags[2:]
     assert tags, "태그를 하나 이상 줘라"
     va = pd.read_csv(ROOT / "validation/inputs.csv")
     Y = pd.read_csv(ROOT / "validation/targets.csv")[T].to_numpy(np.float64)
@@ -47,7 +53,7 @@ def main():
         print("없는 태그:", miss)
     assert have
     New = np.mean([L(t) for t in have], axis=0)
-    A = sum(w * L(t) for t, w in BASE.items())
+    A = L(BASETAG) if BASETAG else sum(w * L(t) for t, w in BASE.items())
     rm = lambda p, m: float(np.sqrt(np.mean((Y[m] - p[m]) ** 2)))
     allm = np.ones(len(va), bool)
     print(f"추가 성분 {len(have)}개 {have}")

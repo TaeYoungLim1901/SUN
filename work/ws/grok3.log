@@ -1,0 +1,16 @@
+I'll start with `work/ws/CLOSED.md` and the current work state, then research last-0.5 RMSE blend tactics and write `work/ws/out3.md`.I'll check the existing question notes and any prior output format so the ranked list matches the rest of this writeup.I'll pull documented Kaggle writeups on seed-bag vs architecture diversity, SWA, snapshot ensembles, and tiny-public-LB strategy.I'll open the writeups that report actual RMSE deltas so the ranked list stays evidence-backed.I'll grab the remaining writeups and papers so every ranked move has a URL and a measured effect size.I have the effect-size numbers. Writing a ranked, URL-backed list of last-0.5 RMSE moves, capped at 40 lines.File is 46 lines; I'll compress it to the 40-line cap.Wrote `work/ws/out3.md` (37 lines). Ranked 8 moves, every claim has a URL.
+
+**Only #1 can buy the −0.4 public target:** a new architecture/target with residual ρ < 0.95 against the 32-seed bag. Equal-blend math: ρ=0.988 → −0.2 RMSE; ρ=0.90 → −1.6.
+
+| rank | move | expected Δ | cost |
+|---|---|---|---|
+| 1 | new arch/target, swap iff ρ<0.95 | −0.3…−0.8 | 8 seeds × 8 min GPU |
+| 2 | hill-climb by residual ρ; keep weaker members | gate for #1 | 2 CPU min |
+| 3 | SWA, replace last ckpt | −0.02…−0.08 | +25% train, 0 disk |
+| 4 | multi-sample dropout M=8 | −0.05 CNN or 0 | +<20% train, 0 infer |
+| 5 | 96px norm diversity (not 128px) | −0.1 iff ρ drops | 4–8 seeds |
+| 6 | snapshot/FGE | ~0 (32 seeds already) | M× weights blows 700MB |
+| 7 | seed-bag 32→64 | −0.006 (CLOSED) | +4.3 h GPU |
+| 8 | slot policy: ≤1 trust-LB | n=1934, iid SE≈0.90 | 0 compute |
+
+Seed-bag, snapshots, and same-family CNN variants sit in one mode (Fort 2019). Public −0.1 is noise; spend zero of the 8 slots probing it.

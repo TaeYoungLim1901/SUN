@@ -1,0 +1,9 @@
+I'll start from `NEXT.md` and `work/ws/CLOSED.md`, then pull the CH-area and transit-lag papers into a short quantity list.Closed axes and question 4 next, then I’ll pull the CH-area / lag papers.I’ll pull DOMAIN §9 and the CH-area / lag formulas, then search the papers for quantities we still don’t compute.Next I’ll check which CH/lag scalars already exist, then hunt papers for formulas we still don’t compute.I’ll open the empirical-model papers and our current CH/tau feature code so the list is only quantities we still skip.I’ll pull the exact A–V formulas and lag terms from the papers so each quantity has a URL.I have the formulas. Writing `work/ws/out4.md` as a 40-line list of quantities we still do not compute.Pseudo-code is short of five lines on four items, and `np.interp` needs increasing `d`. Fixing that now.Wrote `work/ws/out4.md` (36 lines). Five quantities we do not compute, each with formula, URL, and 5-line 512px pseudo-code:
+
+| # | Quantity | Why it is unused |
+|---|---|---|
+| 1 | Robbins longitude-lag occupancy | `d(θ)=3.69−0.07386θ`, `V=330+930 I_s` in 14° swaths. We have CM slices + ballistic `τ=1AU/v`, not longitude→ToF mapping. CM limit is Vršnak `V=350+900 A_±10`, `τ=4d`. |
+| 2 | Hofmeister co-latitude barycenter | `v=478+(2.77e−9 A)(1−\|φ_co\|/61.4)`. We split `\|lat\|<30`, not CH bary lat. `\|φ\|≳61.4°` misses Earth. |
+| 3 | Garton longitudinal width | `vmax=330.8+5.7Δθ` (`Δθ<67`) else 710; `Δt_SW=0.09Δθ`. HSS duration / slow-to-fast length; empirical models smear the ramp. |
+| 4 | West-edge SIR arrival | `t_SI=d(θ_W)`. Reiss ESWF: `σ_t≈0.89d`, `σ_v≈118`; high-v under by 100–200, slow over. |
+| 5 | Rigid-rotation 27d proxy | CHs live many Carrington rotations ⇒ `V(t)≈V(t−27d)`. No `V[t−27]`; use `\|ω−13.2°/d\|` + area stability in the 120h stack. |

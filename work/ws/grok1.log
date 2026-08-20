@@ -1,0 +1,7 @@
+I'll start from `NEXT.md` and `work/ws/CLOSED.md`, then search 2019–2026 papers on EUV input representations for solar-wind speed.CLOSED.md is in; next I’ll check DOMAIN §9 and SEARCH so we don’t re-propose dead features.I’ll search 2019–2026 papers on those EUV representations, then pull skill numbers and construction details.Pulling the key papers for construction details and skill numbers.I have the skill numbers and construction details. Writing the ranked table next.Wrote `work/ws/out1.md` (14 lines). Ranked by expected ensemble gain / hours.
+
+**Build:** polar/Stonyhurst waterfall as a **pixel tensor** (~3 h). SpeedNet’s Stonyhurst persistence maps beat raw disk; Collin’s longitude grid is RMSE 68.1 vs 27-day persist 89.1. Our polar-GBDT already hit 67.68 on **scalars** — the open lever is keeping longitude as pixels, not pooling it into eswf.
+
+**Next:** SpeedNet-BM binary CH maps as an extra CNN stream (~2 h). BM RMSE < full-EUV in every solar-cycle phase. Risk: it may stick to the optical-flow CNN.
+
+**Skip:** CHIMERA (needs 171 Å), 360° Carrington synoptic (need 27 d; we have 63°), open-flux (needs magnetograms), disk-mean irradiance (no 4-day HSS skill). CM-strip A(t) is already eswf. CH area+colatitude as CNN-head scalars is 0.5 h but likely ρ-clones eswf/chfeat unless the hybrid in NEXT.md actually decorrelates.

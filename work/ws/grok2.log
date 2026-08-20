@@ -1,0 +1,10 @@
+I'll start from `NEXT.md` and `work/ws/CLOSED.md`, then search 2019–2026 literature for multi-horizon video forecasting with a strong persistence baseline.CLOSED.md is locked: need a new target/loss that would decorrelate from the MSE seed bag. Next I’ll search 2019–2026 papers on auxiliary times, DILATE/soft-DTW, quantiles, conformal, and CNN+GRU vs ConvLSTM on small data.I have the closed axes and the DILATE/peak-step gap. Next I’ll pull the actual papers for RMSE numbers and whether the loss would decorrelate from an MSE seed bag.DILATE is on the table: it usually hurts MSE and helps timing. Next I’ll pull the remaining papers for RMSE numbers, cost, and residual correlation.I have DILATE’s RMSE tradeoff. Next I’ll pull the solar-wind papers, quantile/conformal numbers, ConvLSTM vs CNN+GRU, and the auxiliary-time work.
+I have the numbers. Writing a 40-line ranked table with URLs on every claim.Wrote `work/ws/out2.md` (15 lines). Ranked by expected RMSE gain / cost for the 9607-sample CNN+GRU, residual-vs-last, 12-horizon RMSE, with a strong persistence baseline.
+
+**Do first (only these can decorrelate from the MSE seed bag):**
+1. **Peak/onset-step aux head** — keep residual MSE, add a 12-way peak-index CE. Fixed output shift is closed; a learned peak index is not.
+2. **MSE+DILATE mix** (α≈0.5) — do not replace MSE. DILATE-only usually **worsens** RMSE (Traffic 0.89→1.00, ECG 21.2→30.3).
+
+**Skip:** temporal attention / ConvLSTM (MSE clones, ρ≥0.988), teacher-forced AR (current model is already MIMO-direct; recursive accumulates), soft-DTW-only (ignores arrival; ECG MSE 21.2→75.1), CQR/conformal (intervals, ΔRMSE=0), Box-Cox (timeline 68.1→75.1; closed q-map family).
+
+27-day lag and ImageNet/GoogLeNet (WindNet, Brown, NYUAD) are illegal here.
