@@ -67,14 +67,15 @@ def main():
         blob["weights"] = {**{k: old[k] / sb * a.b4 for k in b4k},
                            **{k: old[k] / sf * flow for k in fk}}
     for t in a.tags:
-        arch = "v7" if t.startswith("cnn7") else "v9"
+        arch = "v18" if t.startswith("cnn18") else ("v7" if t.startswith("cnn7") else "v9")
         # 태그마다 학습 설정이 다르다. z 정규화 시드를 med 로 담으면 조용히 다른 입력이 된다 (sol 검토 #9/#10).
         norm = "z" if t.startswith("cnn7z") else "med"
         mean, std = (MED if norm == "med" else (blob["cnn"]["mean"], blob["cnn"]["std"]))
         p = WORK / f"{t}.pth"
         assert p.exists(), f"{p} 없음"
         state = {k: v.half() for k, v in torch.load(p, map_location="cpu", weights_only=True).items()}
-        e = {"state": state, "arch": arch, "px": 96, "norm": norm, "wm": 0.7,
+        e = {"state": state, "arch": arch, "px": 96, "norm": norm,
+             "wm": 1.0 if arch == "v18" else 0.7,
              "mean": mean, "std": std, "fstd": fstd}
         if arch == "v7":
             e["smu"], e["ssd"] = stats["smu"], stats["ssd"]

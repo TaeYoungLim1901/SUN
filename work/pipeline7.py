@@ -512,7 +512,7 @@ class NetV4(nn.Module):
 class EncoderV6(nn.Module):
     """2-스트림(영상 2ch + 광류 2ch). work/cnn6.py Encoder 와 레이어·이름이 같다."""
 
-    def __init__(self, dim=192, wm=1.0):
+    def __init__(self, dim=192, wm=1.0, in_ch=4):
         super().__init__()
         c1, c2, c3, c4 = (int(32 * wm), int(64 * wm), int(128 * wm), int(256 * wm))
 
@@ -521,7 +521,7 @@ class EncoderV6(nn.Module):
                 nn.Conv2d(i, o, 3, s, 1, bias=False), nn.BatchNorm2d(o), nn.SiLU(inplace=True),
                 nn.Conv2d(o, o, 3, 1, 1, bias=False), nn.BatchNorm2d(o), nn.SiLU(inplace=True))
 
-        self.net = nn.Sequential(blk(4, c1), blk(c1, c2), blk(c2, c3), blk(c3, c4),
+        self.net = nn.Sequential(blk(in_ch, c1), blk(c1, c2), blk(c2, c3), blk(c3, c4),
                                  nn.AdaptiveAvgPool2d(1), nn.Flatten(), nn.Dropout(0.2),
                                  nn.Linear(c4, dim))
 
@@ -557,6 +557,27 @@ class NetV9(NetV6):
     pass
 
 
+class NetV18(nn.Module):
+    def __init__(self, dim=192, hid=224, wm=1.0):
+        super().__init__()
+        self.enc = EncoderV6(dim, wm, 8)
+        self.gru = nn.GRU(dim, hid, num_layers=1, batch_first=True, bidirectional=True)
+        self.wind = nn.Sequential(nn.Linear(40, 128), nn.SiLU(inplace=True), nn.Linear(128, 128))
+        self.trunk = nn.Sequential(nn.Linear(4 * hid + 128, 256), nn.SiLU(inplace=True), nn.Dropout(0.25))
+        self.amp = nn.Linear(256, 2)
+        self.shape = nn.Linear(256, 24)
+
+    def forward(self, img, wind):
+        b, t = img.shape[:2]
+        e = self.enc(img.flatten(0, 1)).view(b, t, -1)
+        g, _ = self.gru(e)
+        z = self.trunk(torch.cat([g[:, -1], g.mean(1), self.wind(wind)], dim=-1))
+        amp = torch.nn.functional.softplus(self.amp(z))
+        shape = torch.softmax(self.shape(z).view(b, 2, 12), dim=-1)
+        shape = shape / shape.amax(dim=-1, keepdim=True).clamp_min(1e-6)
+        return 100.0 * (amp[:, :1] * shape[:, 0] - amp[:, 1:] * shape[:, 1])
+
+
 def wind_cnn(inputs):
     w = inputs[W].to_numpy(np.float32)
     d = np.diff(w, axis=1, prepend=w[:, :1])
@@ -583,7 +604,7 @@ def stony_grid(px, dev):
     return torch.stack([gx, gy], dim=-1)[None]
 
 
-FLOW_ARCHES = {"v6", "v7", "v9"}
+FLOW_ARCHES = {"v6", "v7", "v9", "v18"}
 
 
 def cnn_predict(state, inputs, split, mean, std, arch="v1", px=PX96, norm="z", wm=1.0,
@@ -623,6 +644,8 @@ def cnn_predict(state, inputs, split, mean, std, arch="v1", px=PX96, norm="z", w
         model = NetV4(int(192 * wm), int(224 * wm), wm, pool)
     elif arch == "v7":
         model = NetV7(int(192 * wm), int(224 * wm), wm)
+    elif arch == "v18":
+        model = NetV18(int(192 * wm), int(224 * wm), wm)
     elif arch == "v9":
         model = NetV9(int(192 * wm), int(224 * wm), wm)
     elif arch == "v6":
@@ -636,7 +659,7 @@ def cnn_predict(state, inputs, split, mean, std, arch="v1", px=PX96, norm="z", w
     model.eval()
     if norm == "med" and px not in _DISK:
         _DISK[px] = disk_mask(px, DEV)
-    grid = stony_grid(px, DEV) if arch == "v9" else None
+    grid = stony_grid(px, DEV) if arch in {"v9", "v18"} else None
     out = []
     for i in range(0, len(inputs), 96):
         rows = torch.arange(i, min(i + 96, len(inputs)), device=DEV)
@@ -650,15 +673,20 @@ def cnn_predict(state, inputs, split, mean, std, arch="v1", px=PX96, norm="z", w
             ii = rows.detach().cpu().numpy()
             fl = torch.from_numpy(np.asarray(farr[pslots[ii]], np.float32)).to(DEV) / scale
             im = torch.cat([im, fl], dim=2)                           # (b,19,4,PX,PX)
-        if arch == "v9":
+        if arch in {"v9", "v18"}:
             b, t = im.shape[:2]
-            im = torch.nn.functional.grid_sample(
+            remap = torch.nn.functional.grid_sample(
                 im.flatten(0, 1), grid.expand(b * t, -1, -1, -1), mode="bilinear",
                 padding_mode="zeros", align_corners=False).view(b, t, *im.shape[2:])
+            im = torch.cat([im, remap], dim=2) if arch == "v18" else remap
         with torch.no_grad():
             if arch in FLOW_ARCHES:
                 fim = torch.flip(im, dims=[-2])
-                fim = torch.cat([fim[:, :, :3], -fim[:, :, 3:]], dim=2)   # fy 부호
+                if arch == "v18":
+                    fim = torch.cat([fim[:, :, :3], -fim[:, :, 3:4],
+                                     fim[:, :, 4:7], -fim[:, :, 7:]], dim=2)
+                else:
+                    fim = torch.cat([fim[:, :, :3], -fim[:, :, 3:]], dim=2)   # fy 부호
                 if DEV.type == "cuda":
                     with torch.amp.autocast("cuda", dtype=torch.bfloat16):
                         out.append((model(im, wf[rows]).float()
