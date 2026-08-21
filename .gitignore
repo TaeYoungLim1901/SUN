@@ -23,3 +23,6 @@ tools/urls.txt
 tools/urls_todo.txt
 # 팩 빌드 산출물 (서버가 원본, model.pth 74MB)
 work/pack_big/
+
+# 서버 종료 대비 백업 (2026-08-21). 서버가 원본, 수 GB
+server_backup/
