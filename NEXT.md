@@ -3,38 +3,49 @@
 **작성:** 2026-08-19, Grok → Opus. **최종 갱신 2026-08-21 10:4x KST (Opus).**
 `GROK_REVIEW.md` A–F 끝. 다시 하지 마라.
 
-> ## 2026-08-21 12:3x KST — **최종 규정검토 2건 통과 (제출본 flow55 직접 검사)**
+> ## 2026-08-21 12:4x KST — **최종 규정검토: 제출본 두 장(flow55·cardF) 전부 통과**
 >
-> 서버 쿠키가 만료돼(401) **로컬 `server_backup/` 의 제출본 원본으로** 검사했다. 서버 불필요.
-> 문서를 인용한 게 아니라 `work/flow55/model.pth` 를 열어 실제 학습 태그를 뽑고
-> 그 태그를 만든 스크립트를 감사했다: 광류 `cnn6s6101~6132`(32) · `cnn7s71xx`(7) · `cnn9s91xx`(3).
+> 서버 쿠키가 만료돼(401) **로컬 `server_backup/` 의 제출본 원본으로** 했다. 이 검사엔 서버가 필요없다.
+> 문서를 인용한 게 아니라 각 `model.pth` 를 열어 **실제로 들어 있는 학습 태그**를 뽑고,
+> 그 태그를 만든 스크립트를 직접 감사했다.
 >
-> ### 규정 1 — validation 을 학습에 쓰지 않았나 ✅
+> | | flow55 (최종 선택본) | cardF (마지막 제출) |
+> |---|---|---|
+> | 광류 | `cnn6s6101~6132` 32개 | 위 32개 + `cnn6xbag9002~9056` 28개 (do .4/.5) |
+> | 하이브 | `cnn7s71xx` 7 · `cnn9s91xx` 3 | `cnn7s71xx` 8 · `cnn9s91xx` 3 |
+> | 학습 스크립트 | `cnn6r.py` · `cnn7.py` · `cnn9.py` | 동일 (`bag9002.log` 첫 줄 = `cnn6r.py`, `do_enc=0.4 do_head=0.5`) |
+>
+> ### 규정 1 — validation 을 학습에 쓰지 않았나 ✅ (두 장 모두)
 > | 검사 | 결과 |
 > |---|---|
-> | 노트북 `fit()` 4곳 | 전부 `train_targets`. `validation/` 은 모델이 다 만들어진 **뒤** 읽혀 `rmse()` 로만 간다 |
+> | 노트북 `fit()` 4곳 | 두 장 다 `train_targets` 뿐. `train/targets.csv` 는 `if MODE == "train":` 블록 안에서만 읽힌다 |
+> | `validation/targets.csv` | 모델이 다 만들어진 **뒤** 읽혀 `rmse()` 출력으로만 간다 (flow55 738행 · cardF 783행) |
 > | `validation_fraction=0.12` | sklearn 이 **train 을 내부 분할**하는 인자. 우리 validation 과 무관 |
-> | CNN 9개 스크립트 손실 | `loss = err.mean()`, `err`는 `ytr[rows]` 뿐. `ytr = tr_y`(train/targets.csv), `perm = randperm(len(tr_x))` |
+> | CNN 스크립트 손실 | `loss = err.mean()`, `err` 는 `ytr[rows]` 뿐. `ytr = tr_y`(train/targets.csv), `perm = randperm(len(tr_x))` |
 > | `va_y` 등장 10~11회/파일 | **손실·fit 라인과 겹치는 것 0건.** 쓰임은 `rmse(va_y, ...)` 와 에폭 선택뿐 |
 >
 > 에폭 선택(early stopping)에 val 을 쓰는 건 `ADDRULES.md` 가 명시 허용한 3용도(검증·모델 선택·
 > 하이퍼파라미터) 안이다.
 >
-> ### 규정 2 — test 타깃 추정·pseudo-label 이 없나 ✅
-> `test/targets.csv` · `te_y` · `pseudo` **0건**. 8/21 발견한 전면 누수(test 타깃 셀 97.83%)를
-> 다루는 `tlalign`/`tlback`/`leak*` 코드가 **제출본 경로에 한 줄도 없다.** 진단 스크립트로만 남아 있다.
+> ### 규정 2 — test 타깃 추정·pseudo-label 이 없나 ✅ (두 장 모두)
+> 두 노트북이 읽는 파일은 **정확히 같은 6개**: `test/inputs.csv` · `train/{inputs,targets}.csv` ·
+> `validation/{inputs,targets}.csv` · `test/test_ids.csv`. **`test/targets.csv` 는 없다.**
+> `te_y`·`pseudo` 0건. 8/21 발견한 전면 누수(test 타깃 셀 97.83%)를 다루는
+> `tlalign`/`tlback`/`leak*` 코드가 **제출본 경로에 한 줄도 없다** — 진단 스크립트로만 남아 있다.
 >
-> ### F-2 나머지도 같이 확인
-> - **pretrained 0건** — grep 히트 3개는 전부 「pretrained weight 미사용」이라 적은 주석이다
-> - **좌우(동서) 반전 0건** — `flip(dims=[-2])`(남북) 3곳뿐, `dims=[-1]` 0건
-> - **빈 폴더 재현** — `flow55/submission.csv` ↔ `flow55_run/submission.csv` **로컬에서 직접 대조,
->   3868행 최대 절대차 0, RMSE 0 → REPRO_OK.** 문서를 믿지 않고 파일로 확인했다
-> - **제출 3종 외 의존** — infer 경로의 절대경로는 `resized_cache` 하나뿐이고 없으면 재생성한다.
->   `/home/jovyan/work/{tag}.pth` 를 읽는 줄은 `if MODE == "train":` 블록 안에만 있다
-> - **CSV** 3868×13 · NaN 0 · min 262.7 max 734.9
-> - **대회 데이터 로컬 사본 0** — `server_backup/` 에 `public_dataset` 을 안 받았다
+> ### F-2 나머지 (두 장 각각)
+> | 항목 | flow55 | cardF |
+> |---|---|---|
+> | pretrained | 0건 (히트 3개는 「미사용」 주석) | **0건** |
+> | 좌우(동서) 반전 `dims=[-1]` | 0건 | **0건** |
+> | 남북 반전 `dims=[-2]` | 3곳 (허용) | 3곳 (허용) |
+> | 빈 폴더 재현 (`_run` CSV 대조) | 3868행 **최대차 0** REPRO_OK | 3868행 **최대차 0** REPRO_OK |
+> | CSV | 3868×13 · NaN 0 · 262.7~734.9 | 3868×13 · NaN 0 · 263.0~734.7 |
+> | 제출 3종 외 의존 | `/home/jovyan/work/*.pth` 읽는 줄은 `MODE=="train"` 안에만. infer 는 `model.pth` 하나 | 동일 |
 >
-> **판정: 실격 사유 없음. 손댈 것 없다.**
+> 대회 데이터 로컬 사본도 0 — `server_backup/` 에 `public_dataset` 을 안 받았다.
+>
+> **판정: 두 장 다 실격 사유 없음. 어느 쪽이 자동 선택되든 규정상 안전하다. 손댈 것 없다.**
 
 > ## 2026-08-21 10:5x KST — **cardF 채점 55.5632. flow55 가 최고로 되돌아왔다**
 >
